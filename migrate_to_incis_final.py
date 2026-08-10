@@ -9,9 +9,9 @@ from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-template_path = r'C:\Users\Aadi Sharma\OneDrive\Desktop\utsa\InCIS-2027_Submission_Template_MS_Word.docx'
-convert_dir = r'C:\Users\Aadi Sharma\OneDrive\Desktop\convert'
-
+template_path = r"C:\Users\Aadi Sharma\OneDrive\Desktop\convert\utsa\InCIS-2027_Submission_Template_MS_Word.docx"
+output_path = r"C:\Users\Aadi Sharma\OneDrive\Desktop\convert\utsa\pdrone_InCIS_2027_Submission.docx"
+convert_dir = r"C:\Users\Aadi Sharma\OneDrive\Desktop\convert"
 doc = Document(template_path)
 
 # Clear template content
@@ -552,6 +552,6 @@ add_body(
 )
 
 # Save output
-output_path = r'C:\Users\Aadi Sharma\OneDrive\Desktop\utsa\pdrone_InCIS_2027_Submission.docx'
+output_path = r'C:\Users\Aadi Sharma\OneDrive\Desktop\convert\utsa\pdrone_InCIS_2027_Submission.docx'
 doc.save(output_path)
 print(f'Successfully saved fully-populated manuscript to: {output_path}')
