@@ -1,0 +1,60 @@
+\section{System Architecture: Perception and Reasoning}
+
+The proposed Frugal Edge architecture is specifically engineered to mathematically eliminate the single point of failure inherent in centralized swarm command. By treating each drone as an autonomous, self-contained computational node, the system dynamically optimizes target allocation through a localized message bus, achieving swarm-level optimization even when the global communication topology is severely fragmented by jamming.
+
+The architecture comprises three primary subsystems running concurrently on each drone: the Local Perception Node, the OpenClaw Reasoning Engine, and the Decentralized Auction Protocol.
+
+\subsection{The Local Perception Node: Entropy and Extreme Compression}
+In conventional architectures, drones act primarily as sensor platforms, streaming high-resolution visual telemetry to a centralized processing unit. A standard 1080p video stream compressed via H.264 typically requires between 3 to 6 Mbps of bandwidth. In a D-DIL environment, where the total available swarm bandwidth might drop below 50 Kbps, transmitting raw visual or LIDAR data is mathematically impossible. 
+
+We formalize the requirement for Extreme Data Compression using Shannon Entropy. The information entropy $H(X)$ of a raw video frame is exceptionally high due to background noise, environmental textures, and redundant pixel clusters. However, the operational value of the frame is limited exclusively to the semantic state of the targets within it. 
+
+Our architecture mandates that all high-entropy sensor processing occurs strictly locally on the physical drone hardware. The Local Perception Node utilizes highly optimized, quantized convolutional neural networks (e.g., YOLOv8-Nano) executed on onboard tensor processing units (TPUs). Instead of transmitting imagery, the perception node extracts only the semantic meaning and compiles it into an extremely compact, structured text string—a State Vector $\vec{v}_j$ for target $j$.
+
+The State Vector is defined as:
+\begin{equation}
+\vec{v}_j = \langle \text{ID}, C, \vec{P}, \vec{V}, \rho \rangle
+\end{equation}
+Where:
+\begin{itemize}
+    \item $\text{ID} \in \mathbb{Z}^+$ is a unique target identifier securely hashed.
+    \item $C \in \{c_1, c_2, \dots, c_n\}$ is the semantic classification class (e.g., "Vehicle", "Radar", "Personnel").
+    \item $\vec{P} \in \mathbb{R}^3$ represents the physical 3D spatial coordinates (latitude, longitude, altitude).
+    \item $\vec{V} \in \mathbb{R}^3$ represents the velocity vector.
+    \item $\rho \in [0,1]$ is the neural network's confidence score.
+\end{itemize}
+
+A JSON representation of this vector requires roughly 150 bytes. Through the application of binary serialization (e.g., Protocol Buffers or MessagePack), this payload is further reduced to a maximum of 42 bytes. This extreme compression achieves an entropy reduction factor exceeding $10^5$, enabling the swarm to share target awareness using highly robust, ultra-narrowband modulation schemes (e.g., LoRa or frequency-hopping spread spectrum) that inherently resist wideband RF jamming.
+
+\subsection{The OpenClaw Reasoning Engine}
+Once a target state vector $\vec{v}_j$ is acquired visually or received from a peer node over the radio, it is passed into the local OpenClaw Reasoning Engine \cite{steinberger2026}. In the context of the Frugal Edge, OpenClaw does not operate as a generalized natural language processor. Instead, it is constrained into a deterministic, mathematically grounded decision engine designed specifically to navigate the optimization landscape of target allocation.
+
+The OpenClaw engine maintains a localized state machine for the drone, tracking its current kinematic energy, ammunition/payload status, and structural integrity. When presented with an array of targets, solving the global allocation problem is known to be NP-hard, specifically mapping to the Multi-Agent Orienteering Problem. Because solving NP-hard problems onboard a low-power microcomputer is unfeasible, OpenClaw utilizes a continuous, differentiable proxy heuristic function.
+
+\subsection{Mathematical Formulation of the Proxy Heuristic}
+The primary operational task of the OpenClaw engine is to calculate a scalar Suitability Score $S_i(t_j)$ for drone $i$ relative to target $t_j$. This score represents the marginal utility of drone $i$ engaging target $j$, integrating physical constraints and tactical directives.
+
+The heuristic evaluates three critical intrinsic variables:
+\begin{enumerate}
+    \item \textbf{Energy Viability ($B_i(t_j)$):} The energy required to reach the target, loiter, and return to base. 
+    \item \textbf{Kinematic Cost ($D_{ij}$):} The Euclidean or path-planning distance to the target.
+    \item \textbf{Payload Match ($P_{ij}$):} The probability of mission success given the drone's current payload type versus the target's classification $C$.
+\end{enumerate}
+
+We define the Energy Viability function based on a standard quadcopter aerodynamic power consumption model:
+\begin{equation}
+E(d, v) = \int_{0}^{d/v} \left( P_{hover} + \kappa v^3 \right) dt
+\end{equation}
+Where $P_{hover}$ is the baseline hovering power, $v$ is the transit velocity, and $\kappa$ is the aerodynamic drag coefficient. If the current battery energy $E_{current} < E(d_{ij}, v) + E_{reserve}$, the drone is incapable of engaging. We normalize the viable energy as $\hat{B}_i \in [0, 1]$. If $E_{current}$ is insufficient, $\hat{B}_i \rightarrow -\infty$.
+
+The Kinematic Cost $\hat{D}_{ij} \in [0, 1]$ is normalized against the maximum operational radius of the swarm.
+
+The Payload Match $P_{ij} \in [0, 1]$ is a predefined matrix mapped by the OpenClaw engine. If drone $i$ carries an optical surveillance payload, and target $j$ is classified as requiring kinetic interdiction, $P_{ij} = 0$. If there is a perfect tactical match, $P_{ij} = 1$.
+
+The final Suitability Score computed by the OpenClaw engine is formalized as a linear combination of these normalized factors:
+\begin{equation}
+S_i(t_j) = \max \left(0, \alpha \hat{B}_i - \beta \hat{D}_{ij} + \gamma P_{ij} \right)
+\label{eq:suitability}
+\end{equation}
+
+Where $\alpha, \beta, \gamma$ are tunable tactical hyperparameters. The power of the Agentic AI approach lies in OpenClaw's ability to dynamically adjust the gradients of these hyperparameters based on changing mission context. If the swarm commander issues a priority directive focusing on survival, the OpenClaw engine mathematically increases the partial derivative with respect to energy ($\frac{\partial S}{\partial \alpha}$), inherently penalizing long-distance engagements. The execution of this heuristic is computationally trivial ($O(1)$ per target), allowing the edge node to evaluate hundreds of prospective targets in sub-millisecond timeframes without cloud assistance.

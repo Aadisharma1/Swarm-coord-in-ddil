@@ -1,0 +1,7 @@
+vllm>=0.4.0
+simpy>=4.1.0
+networkx>=3.0
+matplotlib>=3.7.0
+aiohttp>=3.9.0
+numpy
+pandas

@@ -1,0 +1,70 @@
+\section{The Decentralized Auction Protocol}
+
+With the proxy heuristic function established, the core interaction layer of the swarm relies on the Decentralized Auction Protocol. By utilizing the Suitability Scores, drones can bid on targets without requiring a central auctioneer or server. This protocol draws heavily on the Consensus-Based Bundle Algorithm (CBBA) formulated by Choi et al. \cite{choi2009}, which we have heavily adapted specifically for asynchronous, high-packet-loss communication buses.
+
+\subsection{Graph Theory Formulation and Cryptography}
+We model the swarm as a time-varying directed graph $G(V, E(t))$, where $V$ is the set of $N$ drones, and $E(t)$ is the set of active communication links at time $t$. In a D-DIL environment, $E(t)$ is highly sparse. An edge $(i, k) \in E(t)$ exists if and only if the SINR between drone $i$ and drone $k$ exceeds the demodulation threshold. 
+
+The protocol operates over an encrypted, strictly localized message bus (one-hop communication). To prevent adversarial spoofing or Sybil attacks—where an adversary injects fake bids to disrupt the auction—every message is appended with a lightweight Elliptic Curve Digital Signature Algorithm (ECDSA) hash (e.g., secp256r1). Given the extreme constraints, the signature adds exactly 64 bytes to the message payload, keeping the total transmission size under the MTU limits of narrowband IoT transceivers.
+
+\subsection{Phases of the Auction Algorithm}
+The decentralized auction runs continuously in the background of the OpenClaw engine, executing the following four sequential phases iteratively:
+
+\subsubsection{Broadcast Phase}
+When drone $i$ discovers a new target $t_j$ through its Perception Node, it serializes $\vec{v}_j$ and broadcasts it to its immediate neighbors $N_i = \{k \in V \mid (i,k) \in E(t)\}$. 
+
+\subsubsection{Calculation Phase}
+Upon receiving a target vector $t_j$, drone $i$ utilizes the OpenClaw engine to calculate $S_i(t_j)$ using Equation \ref{eq:suitability}. If the score exceeds a predefined bidding threshold $\tau$, the target is added to the drone's internal candidate bundle. 
+
+\subsubsection{Bidding Phase}
+Drone $i$ constructs a bid message $M_i = \langle i, t_j, S_i(t_j), \text{Sig}_i \rangle$. It broadcasts this bid to $N_i$. 
+
+\subsubsection{Consensus Phase (Conflict Resolution)}
+To resolve conflicting bids without a central arbiter, drones maintain two vectors of length $T$ (total targets): a Winning Bid List (WBL) and a Winning Agent List (WAL). When drone $i$ receives a bid from neighbor $k$ for target $t_j$, it applies deterministic conflict resolution logic to update its state.
+
+\begin{algorithm}[H]
+\caption{Decentralized Conflict Resolution}
+\label{alg:consensus}
+\begin{algorithmic}[1]
+\REQUIRE Local node $i$, Sender node $k$, Target $t_j$
+\REQUIRE Received Bid $S_k(t_j)$ from node $k$
+\STATE $S_{current} \leftarrow \text{WBL}_i[t_j]$
+\STATE $A_{current} \leftarrow \text{WAL}_i[t_j]$
+\IF {$S_k(t_j) > S_{current}$}
+    \STATE $\text{WBL}_i[t_j] \leftarrow S_k(t_j)$
+    \STATE $\text{WAL}_i[t_j] \leftarrow k$
+    \STATE Broadcast updated WBL to $N_i$
+\ELSIF {$S_k(t_j) == S_{current}$}
+    \IF {$k < A_{current}$} 
+        \STATE \textit{// Tie-breaker using immutable Node ID}
+        \STATE $\text{WAL}_i[t_j] \leftarrow k$
+        \STATE Broadcast updated WAL to $N_i$
+    \ENDIF
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+As rigorously proven by Choi et al. \cite{choi2009}, as long as the communication graph $G$ is jointly connected over a bounded time interval, the local WBL lists will monotonically converge to a conflict-free global assignment. If the graph partitions due to severe EW, the sub-swarms will independently reach consensus within their disconnected topologies, maximizing operational efficiency without deadlocking.
+
+\section{Proposed Validation Methodology}
+
+Given the profound logistical, financial, and regulatory constraints associated with executing physical hardware tests of autonomous drone swarms under active, military-grade RF jamming, we propose validating this architecture through a rigorous Object-Oriented Software Emulation environment. This methodology ensures that the algorithmic logic, consensus convergence rates, and OpenClaw engine performance can be empirically quantified.
+
+The validation architecture consists of two tightly coupled emulation layers: the Agent Simulation Layer and the Network Emulation Layer.
+
+\subsection{Agent Simulation Layer (Python Multiprocessing)}
+The logic of the swarm is modeled using a deeply optimized multiprocessing framework in Python. Each drone is instantiated as a completely distinct operating system process, ensuring absolute memory isolation. This architectural choice strictly prevents simulated drones from inadvertently sharing state variables or memory spaces through software loopholes, forcing them to serialize data and communicate exclusively through the network layer, mirroring a physical deployment.
+
+Each Drone Process encapsulates:
+\begin{enumerate}
+    \item \textbf{Kinematic Engine:} A 3D physics simulator updating vectors based on quadcopter dynamics.
+    \item \textbf{OpenClaw Runtime:} A localized instance of the OpenClaw framework executing the heuristic functions.
+    \item \textbf{Protocol Handler:} A module generating the ECDSA signatures and managing the WBL/WAL tables.
+\end{enumerate}
+
+\subsection{Network Emulation Layer and EW Modeling}
+To accurately model the devastating effects of the D-DIL environment without encountering hardware configuration limits, we designed an internal probabilistic network emulation layer directly within the Python environment. Rather than utilizing external bridges, which introduce uncontrolled latencies, our Object-Oriented environment natively simulates the physical layer realities.
+
+Within our simulation, we do not assume perfect transmission. Instead, we model physical layer interference by probabilistically dropping packets during the broadcast phase. The simulation incorporates a mathematical Electronic Warfare model that mimics wideband Gaussian noise.
+
+By mathematically modulating the simulated Signal-to-Interference-plus-Noise Ratio (SINR) at every drone's receiver, we systematically induce tightly controlled, dynamic packet loss rates ($P_{loss}$) ranging from a benign 0\% up to a catastrophic 90\%. This probabilistic Markov-chain approach provides a highly sterile, reproducible environment to empirically stress-test the decentralization protocols and validate the resilience of the swarm under jamming.
