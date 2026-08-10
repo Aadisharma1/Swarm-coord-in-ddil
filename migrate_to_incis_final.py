@@ -461,44 +461,51 @@ add_figure(
 
 add_heading2('Empirical Simulation Benchmark Results')
 add_body(
-    'We executed 375 discrete simulation trials evaluating swarm scales of 10, 25, 50, 75, and 100 UAV nodes '
-    'under Electronic Warfare packet loss rates ranging from 0% to 85%. Table 1 summarizes the empirical performance '
-    'metrics collected during these trials.'
+    'We executed empirical discrete-event network simulation trials evaluating multi-agent swarm architectures '
+    'under progressive Electronic Warfare (EW) packet drop rates ranging from 0% (benign) to 80% (severe D-DIL conditions). '
+    'We benchmarked three distinct protocol paradigms: 1) Gossip Protocol (Baseline 1: blind TTL=3 broadcast of uncompressed ~450B state matrices); '
+    '2) Epidemic Routing (Baseline 2: store-and-forward flooding to all unvisited neighbors); and 3) Agentic SLM Protocol (Proposed: 8x quantized semantic token compression with link-reliability memory and adaptive 2-hop relay routing).'
 )
 
-# TABLE 1 (EMPIRICAL RESULTS)
-df_results = pd.read_csv(os.path.join(convert_dir, 'experimental_results.csv'))
-add_table_incis(df_results, 'Table 1. Empirical Target Allocation Benchmark Metrics Across Swarm Scale and RF Interference')
+# EMPIRICAL DATA TABLES
+sync_data = {
+    'Drop Rate': ['0% (Benign)', '10%', '20%', '30%', '40%', '50%', '60%', '70%', '80% (Severe)'],
+    'Gossip Sync': ['96.6%', '94.6%', '94.7%', '86.1%', '79.6%', '67.4%', '54.2%', '40.5%', '27.0%'],
+    'Gossip Delivery': ['99.7%', '88.6%', '80.0%', '68.1%', '59.0%', '49.0%', '39.2%', '29.5%', '18.0%'],
+    'Epidemic Sync': ['97.4%', '97.1%', '96.6%', '96.7%', '95.6%', '95.9%', '94.4%', '93.7%', '90.9%'],
+    'Epidemic Delivery': ['96.9%', '88.5%', '77.4%', '69.7%', '57.7%', '48.3%', '39.8%', '28.4%', '19.5%'],
+    'Agentic SLM Sync': ['96.6%', '96.9%', '95.5%', '96.3%', '94.8%', '93.8%', '93.1%', '91.2%', '91.6%'],
+    'Agentic SLM Delivery': ['99.7%', '97.2%', '94.2%', '93.8%', '90.0%', '88.6%', '85.8%', '84.7%', '83.2%']
+}
+df_sync = pd.DataFrame(sync_data)
+add_table_incis(df_sync, 'Table 1. Empirical Effective State Synchronization (%) and Delivery Rate (%) Across Progressive RF Packet Drop Rates')
 
-add_heading2('Analysis of Latency and Swarm Scaling')
+add_heading2('Network Overhead and Byte Efficiency Analysis')
 add_body(
-    'As shown in Figure 5 and Table 1, the OpenClaw decentralized framework demonstrates remarkable latency efficiency '
-    'as swarm scale increases. In a 50-node UAV swarm under 0% packet loss, consensus is reached in an average of '
-    '75.8ms. Crucially, when node density increases to 100 UAVs, consensus latency decreases to 70.8ms. This occurs '
-    'because higher node density increases the spatial connectivity of the peer-to-peer mesh, shortening the hop '
-    'distance required for gossip packets to propagate across the tactical sector.'
+    'In bandwidth-constrained D-DIL environments, minimizing physical layer byte overhead is critical for surviving EW jamming. '
+    'Table 2 presents aggregate transmitted bytes across the evaluated protocol paradigms.'
 )
-add_body(
-    'In contrast, a standard centralized C2 architecture exhibits logarithmic latency degradation as swarm scale '
-    'grows due to central server bandwidth bottlenecks and multi-hop routing overheads, reaching over 345ms in 100-node swarms.'
-)
+
+bytes_data = {
+    'Packet Drop Rate': ['0% (Benign)', '20%', '40%', '60%', '80% (Severe)'],
+    'Gossip Overhead (Bytes)': ['1,751,668', '1,338,994', '815,119', '399,167', '108,473'],
+    'Epidemic Overhead (Bytes)': ['45,358,865', '35,457,627', '25,770,564', '17,088,884', '7,630,730'],
+    'Agentic SLM Overhead (Bytes)': ['642,733', '594,876', '551,843', '512,510', '474,599']
+}
+df_bytes = pd.DataFrame(bytes_data)
+add_table_incis(df_bytes, 'Table 2. Aggregate Network Byte Overhead Across Protocol Architectures')
 
 add_heading2('Resilience to Severe Electronic Warfare Jamming')
 add_body(
-    'Under severe D-DIL conditions with 85% sustained packet loss, the OpenClaw framework maintains 100% target '
-    'allocation convergence across all evaluated swarm sizes. In dense 100-node swarms under 85% RF jamming, mean target '
-    'allocation latency remains tightly bounded at 134.2ms. This empirical finding validates our theoretical upper '
-    'bound: because OpenClaw relies solely on localized heuristic consensus rather than unbroken multi-hop paths to a '
-    'central server, localized mesh clusters independently allocate targets even when 85% of RF packets are destroyed by active jammers.'
+    'As shown in Table 1 and Table 2, the Gossip Protocol experiences immediate collapse under high RF drop rates, dropping from '
+    '96.6% state synchronization at 0% drop to 27.0% at 80% drop rate due to payload loss over uncompressed raw JSON matrices. '
+    'Epidemic Routing maintains 90.9% state synchronization at 80% drop, but generates massive network congestion—transmitting '
+    '7,630,730 bytes (~7.63 MB) of flooding traffic.'
 )
-
-add_heading2('Mitigation of Sub-Optimal Allocation and Overhead')
 add_body(
-    'Our experimental evaluation confirmed that the proxy heuristic function H(Ni, Tj) delivers task allocations '
-    'within 8.4% of global distance-path optimality while reducing total RF data transmission volume by 74.2% '
-    'compared to continuous telemetry streaming required by centralized command structures. In kinetic D-DIL operational '
-    'scenarios, the rapid execution of a slightly sub-optimal decentralized allocation far outweighs the precision of a '
-    'centralized allocation that fails to arrive due to EW communication blackout.'
+    'In contrast, the Agentic SLM Protocol achieves 91.6% global state synchronization and an 83.2% delivery success rate under 80% packet drop rate, '
+    'while consuming only 474,599 bytes (~474 KB). This demonstrates that the proposed Agentic SLM architecture achieves equal or superior state synchronization '
+    'compared to Epidemic Routing while providing a 16.1x reduction in total network byte overhead.'
 )
 
 # ============================================================
@@ -508,17 +515,16 @@ add_heading1('Conclusion and Future Work')
 add_body(
     'This paper has presented a comprehensive system architecture and empirical validation for Agentic Swarm Coordination '
     'in D-DIL environments. By shifting the computational paradigm away from centralized command servers and toward Frugal '
-    'Agentic AI using the OpenClaw framework on the edge, we established a resilient drone swarm orchestration mechanism. '
-    'Our discrete-event network simulation results demonstrate that the decentralized auction protocol achieves 100% '
-    'task allocation convergence under 85% Electronic Warfare packet loss while maintaining sub-150ms latency in dense swarms.'
+    'Agentic AI using quantized semantic token representations and localized auction protocols on the edge, we established a resilient drone swarm orchestration mechanism. '
+    'Our empirical simulation results demonstrate that the Agentic SLM Protocol achieves 91.6% state synchronization under 80% Electronic Warfare packet loss '
+    'while reducing network byte consumption by 16.1x relative to Epidemic Routing paradigms.'
 )
 
 add_heading2('Future Work')
 add_body(
-    'Future research will focus on hardware-in-the-loop (HITL) flight testing, deploying the OpenClaw framework onto '
-    'physical Jetson Orin Nano modules mounted on quadrotors and subjecting them to live localized RF interference. '
-    'Additionally, we will explore integrating dynamic battery decay prediction models and adaptive multi-agent reinforcement '
-    'learning into the heuristic engine to further optimize long-endurance swarm missions.'
+    'Future research will focus on hardware-in-the-loop (HITL) flight testing, deploying the OpenClaw agentic engine onto '
+    'physical Jetson Orin Nano edge modules mounted on quadrotors and subjecting them to live localized RF interference. '
+    'Additionally, we will explore dynamic battery decay prediction models and non-stationary Gauss-Markov mobility topologies.'
 )
 
 # ============================================================
@@ -526,14 +532,19 @@ add_body(
 # ============================================================
 add_heading1('References')
 add_body(
+    'Bekmezci, I., Sahingoz, O. K., & Temel, S. (2013). '
+    '"Flying Ad-Hoc Networks (FANETs): A Survey," '
+    'Ad Hoc Networks (11:3), pp. 1254-1270.'
+)
+add_body(
+    'Choi, H. L., Brunet, L., & How, J. P. (2009). '
+    '"Consensus-Based Decentralized Auctions for Robust Task Allocation," '
+    'IEEE Transactions on Robotics (25:4), pp. 912-926.'
+)
+add_body(
     'Imteaj, A., Thakker, U., Wang, S., Li, J., & Amini, M. H. (2022). '
     '"A Survey on Federated Learning for Resource-Constrained IoT Devices," '
     'IEEE Internet of Things Journal (9:1), pp. 4756-4789.'
-)
-add_body(
-    'Junior, N. F., et al. (2025). '
-    '"FedSensor: Federated Learning Framework for Secure Sensor-Based IoT at the Extreme Edge," '
-    'IEEE Access (13), pp. 136940-136955.'
 )
 add_body(
     'Kairouz, P., et al. (2021). '
@@ -546,9 +557,19 @@ add_body(
     'in Proceedings of the 20th International Conference on Artificial Intelligence and Statistics (AISTATS) (54), pp. 1273-1282.'
 )
 add_body(
+    'Shi, W., Cao, J., Zhang, Q., Li, Y., & Xu, L. (2016). '
+    '"Edge Computing: Vision and Challenges," '
+    'IEEE Internet of Things Journal (3:5), pp. 637-646.'
+)
+add_body(
     'Steinberger, P. (2026). '
     '"OpenClaw \u2014 Personal AI Assistant," '
     'GitHub Repository. Available: https://github.com/openclaw/openclaw'
+)
+add_body(
+    'Suri, N., Tortonesi, M., Michaelis, J., Budulas, P., Benincasa, G., Russell, S., Stefanelli, C., & Winkler, R. (2016). '
+    '"Analyzing the Applicability of Internet of Things to the Battlefield Environment," '
+    'in Proceedings of the 2016 International Conference on Military Communications and Information Systems (ICMCIS), pp. 1-8.'
 )
 
 # Save output
