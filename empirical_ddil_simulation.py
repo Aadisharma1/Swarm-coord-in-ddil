@@ -39,7 +39,7 @@ import simpy
 # Simulation Configuration Constants
 # ============================================================================
 
-NUM_NODES: int = 8                       # 8 Nodes mapped 1-to-1 with 8 A100 GPUs
+NUM_NODES: int = 50                      # 50 Swarm Nodes load-balanced across 8 A100 GPUs
 SIM_DURATION: float = 100.0               # Simulation time units per benchmark run
 BROADCAST_INTERVAL: float = 2.0           # Periodic state broadcast frequency
 BASE_LATENCY: float = 0.5                # Baseline network latency (time units)
@@ -56,8 +56,8 @@ DROP_RATE_SWEEP: List[float] = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0
 # Fixed seed for 1:1 deterministic comparison across all protocols
 RANDOM_SEED: int = 42
 
-# Base URL mapping for vLLM ports (8001 through 8008)
-VLLM_BASE_PORTS: List[int] = [8001 + i for i in range(NUM_NODES)]
+# Base URL mapping for 8 live vLLM GPU server ports (8001 through 8008)
+VLLM_BASE_PORTS: List[int] = [8001 + i for i in range(8)]
 VLLM_MODEL_NAME: str = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 # Benchmark output filenames
@@ -472,7 +472,7 @@ class LLMAgentNode:
         self.ctrl = ctrl
         self.graph = graph
         self.metrics = metrics
-        self.vllm_port = VLLM_BASE_PORTS[node_id]
+        self.vllm_port = VLLM_BASE_PORTS[node_id % len(VLLM_BASE_PORTS)]
         self.vllm_endpoint = f"http://localhost:{self.vllm_port}/v1/chat/completions"
 
         self.state_matrix: Dict[str, str] = {}
@@ -651,7 +651,7 @@ _node_registry: Dict[int, object] = {}
 # ============================================================================
 
 def build_mesh_topology(num_nodes: int) -> nx.Graph:
-    k = 4
+    k = 6 if num_nodes >= 6 else 4
     G = nx.watts_strogatz_graph(num_nodes, k=k, p=0.3, seed=RANDOM_SEED)
     if not nx.is_connected(G):
         components = list(nx.connected_components(G))
@@ -745,8 +745,8 @@ Epidemic Routing (Baseline 2)  & {e_del*100:.1f}\\% & {e_sync*100:.1f}\\% & {e_b
 def run_empirical_benchmark_suite() -> None:
     print("\n" + "=" * 76)
     print("  EMPIRICAL DDIL MULTI-AGENT SWARM BENCHMARK SUITE")
-    print(f"  Nodes: {NUM_NODES} (Mapped 1:1 to A100 vLLM Endpoints 8001-8008)")
-    print(f"  Simulation Duration: {SIM_DURATION} time units | Seed: {RANDOM_SEED}")
+    print(f"  Nodes: {NUM_NODES} Swarm Nodes (Round-Robin Mapped to 8 A100 vLLM Endpoints)")
+    print(f"  Topology: Watts-Strogatz (k=6, p=0.3) | Duration: {SIM_DURATION}t | Seed: {RANDOM_SEED}")
     print("=" * 76)
 
     drop_percentages: List[float] = [dr * 100 for dr in DROP_RATE_SWEEP]
@@ -763,19 +763,19 @@ def run_empirical_benchmark_suite() -> None:
         g_sync, g_del, g_b, g_e = execute_simulation_run("gossip", dr)
         gossip_syncs.append(g_sync * 100)
         gossip_energies.append(g_e / 1000.0)  # Convert to kJ
-        print(f"  [Gossip Baseline]   Sync: {g_sync:.1%} | Delivery: {g_del:.1%} | Bytes: {g_b:,} | Energy: {g_e/1000:.2f} kJ")
+        print(f"  [Gossip Baseline]   Sync: {g_sync:.1%} | Delivery: {g_del:.1%} | Bytes: {g_b:,} | Energy: {(g_e/1000):.2f} kJ")
 
         # 2. Epidemic Protocol
         e_sync, e_del, e_b, e_e = execute_simulation_run("epidemic", dr)
         epidemic_syncs.append(e_sync * 100)
         epidemic_energies.append(e_e / 1000.0)  # Convert to kJ
-        print(f"  [Epidemic Baseline] Sync: {e_sync:.1%} | Delivery: {e_del:.1%} | Bytes: {e_b:,} | Energy: {e_e/1000:.2f} kJ")
+        print(f"  [Epidemic Baseline] Sync: {e_sync:.1%} | Delivery: {e_del:.1%} | Bytes: {e_b:,} | Energy: {(e_e/1000):.2f} kJ")
 
         # 3. Agentic SLM Protocol
         a_sync, a_del, a_b, a_e = execute_simulation_run("agentic", dr)
         agentic_syncs.append(a_sync * 100)
         agentic_energies.append(a_e / 1000.0)  # Convert to kJ
-        print(f"  [Agentic SLM]       Sync: {a_sync:.1%} | Delivery: {a_del:.1%} | Bytes: {a_b:,} | Energy: {a_e/1000:.2f} kJ")
+        print(f"  [Agentic SLM]       Sync: {a_sync:.1%} | Delivery: {a_del:.1%} | Bytes: {a_b:,} | Energy: {(a_e/1000):.2f} kJ")
 
         if dr == 0.80:
             gossip_last = (g_sync, g_del, g_b, g_e)
@@ -805,7 +805,7 @@ def run_empirical_benchmark_suite() -> None:
         ax1.annotate(f'{yg:.0f}%', (x, yg), textcoords='offset points', xytext=(0, -14), ha='center', fontsize=7, color='#d62828', fontweight='bold')
         ax1.annotate(f'{ya:.0f}%', (x, ya), textcoords='offset points', xytext=(0, 10), ha='center', fontsize=7, color='#023e8a', fontweight='bold')
 
-    ax1.set_title('Effective State Synchronization % Under DDIL Degradation\n8-Node vLLM Cluster Benchmark (Meta-Llama-3-8B-Instruct via 8x A100 GPUs)', fontsize=12, fontweight='bold', pad=15)
+    ax1.set_title('Effective State Synchronization % Under DDIL Degradation\n50-Node Swarm vLLM Cluster Benchmark (Meta-Llama-3-8B-Instruct via 8x A100 GPUs)', fontsize=12, fontweight='bold', pad=15)
     ax1.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
     ax1.set_ylabel('Effective State Synchronization (%)', fontsize=11)
     ax1.set_xlim(-2, 82); ax1.set_ylim(0, 105)
