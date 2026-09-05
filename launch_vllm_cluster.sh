@@ -1,51 +1,71 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# vLLM 8x A100 GPU Cluster Launch Script
+# vLLM 8x A100 Cluster Launch + Readiness Wait + Warmup
 # ==============================================================================
-# Architecture: Pinned 1-to-1 GPU-to-Node Cluster Server Setup
-# Description : Launches 8 independent OpenAI-compatible vLLM API server
-#               instances on localhost across CUDA devices 0 through 7.
+# GPU i -> port 8001+i. Blocks until ALL endpoints answer /v1/models, then sends
+# one warmup completion per endpoint (absorbs CUDA-graph capture so the first
+# simulation broadcasts don't hit the 2s inference timeout).
 #
-# Ports       : 8001, 8002, 8003, 8004, 8005, 8006, 8007, 8008
-# Target Model: meta-llama/Meta-Llama-3-8B-Instruct
+# Usage:
+#   export HF_TOKEN=hf_...        # gated model, or: huggingface-cli login
+#   bash launch_vllm_cluster.sh
 # ==============================================================================
-
 set -euo pipefail
 
-MODEL_NAME="meta-llama/Meta-Llama-3-8B-Instruct"
-GPU_MEMORY_UTILIZATION="0.9"
-MAX_MODEL_LEN="2048"
+MODEL_NAME="${VLLM_MODEL_NAME:-meta-llama/Meta-Llama-3-8B-Instruct}"
+GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEM:-0.9}"
+MAX_MODEL_LEN="${VLLM_MAX_LEN:-2048}"
 BASE_PORT=8001
+NUM_GPUS="${NUM_GPUS:-8}"
 
 echo "=================================================================="
-echo "Initializing 8x A100 GPU Cluster for Decentralized Node Inference"
-echo "Model: ${MODEL_NAME}"
+echo " 8x A100 vLLM Cluster | Model: ${MODEL_NAME}"
 echo "=================================================================="
 
-# Loop through GPU IDs 0 to 7
-for GPU_ID in {0..7}; do
+if [ -z "${HF_TOKEN:-}" ] && [ ! -f "$HOME/.cache/huggingface/token" ]; then
+    echo "[ERROR] ${MODEL_NAME} is gated. export HF_TOKEN=hf_... (approved access) or run: huggingface-cli login"
+    exit 1
+fi
+
+PIDS=()
+for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
     PORT=$((BASE_PORT + GPU_ID))
     LOG_FILE="vllm_node_gpu_${GPU_ID}.log"
-
-    echo "[CLUSTER] Spawning vLLM Node ${GPU_ID} on CUDA_VISIBLE_DEVICES=${GPU_ID} at http://localhost:${PORT}/v1..."
-
+    echo "[CLUSTER] GPU ${GPU_ID} -> http://localhost:${PORT}/v1 (log: ${LOG_FILE})"
     CUDA_VISIBLE_DEVICES=${GPU_ID} python3 -m vllm.entrypoints.openai.api_server \
         --model "${MODEL_NAME}" \
-        --port ${PORT} \
-        --gpu-memory-utilization ${GPU_MEMORY_UTILIZATION} \
-        --max-model-len ${MAX_MODEL_LEN} \
+        --port "${PORT}" \
+        --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+        --max-model-len "${MAX_MODEL_LEN}" \
         --trust-remote-code \
         > "${LOG_FILE}" 2>&1 &
-
-    PID=$!
-    echo "[CLUSTER] Node ${GPU_ID} process launched with PID: ${PID} (Logging to ${LOG_FILE})"
+    PIDS+=($!)
 done
 
-echo "------------------------------------------------------------------"
-echo "All 8 vLLM endpoints initializing in background."
-echo "Endpoints map:"
-for GPU_ID in {0..7}; do
+echo "[CLUSTER] Waiting for readiness (model loading can take 10-20 min for 8 replicas)..."
+for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
     PORT=$((BASE_PORT + GPU_ID))
-    echo "  - Node ${GPU_ID} -> http://localhost:${PORT}/v1/chat/completions"
+    ELAPSED=0
+    until curl -sf "http://localhost:${PORT}/v1/models" > /dev/null 2>&1; do
+        if [ ${ELAPSED} -ge 1800 ]; then
+            echo "[ERROR] Port ${PORT} not ready after 1800s. Check vllm_node_gpu_${GPU_ID}.log"
+            exit 1
+        fi
+        sleep 10; ELAPSED=$((ELAPSED + 10))
+    done
+    echo "[READY] port ${PORT} (${ELAPSED}s)"
 done
+
+echo "[CLUSTER] Warmup completions..."
+for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
+    PORT=$((BASE_PORT + GPU_ID))
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://localhost:${PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "{\"model\": \"${MODEL_NAME}\", \"messages\": [{\"role\": \"user\", \"content\": \"Reply with: {\"}], \"max_tokens\": 8}" || true)
+    echo "  warmup port ${PORT}: HTTP ${CODE}"
+done
+
+echo "=================================================================="
+echo " All ${NUM_GPUS} endpoints live and warm. PIDs: ${PIDS[*]}"
+echo " Shutdown later: kill ${PIDS[*]}   (or: pkill -f api_server)"
 echo "=================================================================="

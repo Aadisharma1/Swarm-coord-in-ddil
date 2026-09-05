@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
+import matplotlib
+matplotlib.use("Agg")  # headless-safe backend (required on GPU servers without a display)
 import matplotlib.pyplot as plt
 import networkx as nx
 import simpy
@@ -165,6 +167,9 @@ class NetworkPayload:
     visited_nodes: Set[int] = field(default_factory=set)
     ground_truth: Optional[RawStateMatrix] = None
     tokens_generated: int = 0
+    # Raw-state reference size used by the byte-scaled loss law; carried through
+    # forwarding hops so loss scaling stays consistent with the origin broadcast.
+    ref_raw_bytes: int = 450
 
 
 @dataclass
@@ -305,7 +310,8 @@ def validate_received_structure(parsed: dict, current_time: float) -> bool:
 # ============================================================================
 
 class EmpiricalMetricsCollector:
-    """Aggregates transmission metrics, byte throughput, drift failures, and DPR."""
+    """Aggregates transmission metrics, byte throughput, drift failures, DPR, and
+    verification-gate / fallback accounting."""
 
     def __init__(self):
         self.records: List[TransmissionRecord] = []
@@ -315,6 +321,9 @@ class EmpiricalMetricsCollector:
         self.total_tokens_generated: int = 0
         self.decision_agreements: List[float] = []
         self.ips_scores: List[float] = []
+        self.llm_fallbacks: int = 0
+        self.injections_generated: int = 0
+        self.injections_rejected: int = 0
 
     def record(self, rec: TransmissionRecord) -> None:
         self.records.append(rec)
@@ -329,6 +338,15 @@ class EmpiricalMetricsCollector:
                 self.drift_failures += 1
             else:
                 self.parse_failures += 1
+
+    def record_llm_fallback(self) -> None:
+        self.llm_fallbacks += 1
+
+    def record_injection(self, rejected: bool) -> None:
+        """Records a controlled hallucination injection and whether the IPS gate rejected it."""
+        self.injections_generated += 1
+        if rejected:
+            self.injections_rejected += 1
 
     def record_decision(self, agreement: float) -> None:
         self.decision_agreements.append(agreement)
@@ -364,6 +382,19 @@ class EmpiricalMetricsCollector:
     def mean_ips(self) -> float:
         return statistics.mean(self.ips_scores) if self.ips_scores else 1.0
 
+    @property
+    def gate_pass_rate(self) -> float:
+        """Fraction of SLM compressions that passed the sender-side IPS gate."""
+        total = self.parse_successes + self.drift_failures
+        return self.parse_successes / total if total > 0 else 1.0
+
+    @property
+    def injection_rejection_rate(self) -> float:
+        """Fraction of injected hallucinations rejected by the IPS gate (gate recall)."""
+        if self.injections_generated == 0:
+            return 0.0
+        return self.injections_rejected / self.injections_generated
+
     def reset(self) -> None:
         self.records.clear()
         self.parse_failures = 0
@@ -372,6 +403,9 @@ class EmpiricalMetricsCollector:
         self.total_tokens_generated = 0
         self.decision_agreements.clear()
         self.ips_scores.clear()
+        self.llm_fallbacks = 0
+        self.injections_generated = 0
+        self.injections_rejected = 0
 
 
 # ============================================================================
@@ -382,14 +416,33 @@ class GilbertElliottChannel:
     """
     Two-state Markov model: GOOD (low loss) <-> BAD (high burst loss).
     Captures temporal correlation and burst drop dynamics typical of extreme DDIL.
+
+    Calibration guarantee: the stationary mean loss of the chain equals the nominal
+    drop rate D (pi_bad * loss_bad + (1 - pi_bad) * loss_good = D), so the swept
+    x-axis is the *realized* long-run loss fraction, not merely a label. Burst
+    intensity emerges from the structure: the BAD-state dwell time (1/p_b2g) grows
+    with stress, producing longer bursts at high degradation.
     """
     def __init__(self, drop_rate: float, rng: Optional[random.Random] = None):
         self.rng = rng or random.Random()
         self.state = "GOOD"
-        self.loss_good = min(0.05, drop_rate * 0.10)
-        self.loss_bad = min(0.98, max(0.30, drop_rate * 1.20))
-        self.p_g2b = min(0.40, drop_rate * 0.35)
-        self.p_b2g = max(0.15, 0.50 - drop_rate * 0.30)
+        drop_rate = min(max(drop_rate, 0.0), 0.98)
+        if drop_rate <= 1e-9:
+            self.p_g2b, self.p_b2g = 0.0, 0.35
+            self.loss_good, self.loss_bad = 0.0, 0.0
+            return
+        # Transition probabilities target stationary bad-fraction pi ~ D
+        self.p_b2g = max(0.05, 0.35 * (1.0 - drop_rate))
+        self.p_g2b = min(0.98, 0.35 * drop_rate / max(1e-9, 1.0 - drop_rate))
+        pi = self.p_g2b / max(1e-9, self.p_g2b + self.p_b2g)
+        self.loss_good = min(0.05, 0.30 * drop_rate)
+        residual = drop_rate - (1.0 - pi) * self.loss_good
+        self.loss_bad = min(0.98, max(self.loss_good, residual / max(1e-9, pi)))
+
+    @property
+    def stationary_mean_loss(self) -> float:
+        pi = self.p_g2b / max(1e-9, self.p_g2b + self.p_b2g)
+        return pi * self.loss_bad + (1.0 - pi) * self.loss_good
 
     def sample_loss_probability(self) -> float:
         if self.state == "GOOD":
@@ -433,7 +486,9 @@ class EnvironmentController:
 
         base_loss_prob = self.channel.sample_loss_probability()
         size_factor = payload.byte_size / max(1, ref_raw_bytes)
-        effective_drop_prob = min(0.98, base_loss_prob * (0.7 + 0.3 * size_factor))
+        # Byte-scaled loss law (paper Eq. 3): loss probability scales linearly with
+        # payload size relative to the raw-state reference.
+        effective_drop_prob = min(0.98, base_loss_prob * size_factor)
 
         if self.rng.random() < effective_drop_prob:
             return False, 0.0, "ChannelPacketDrop"
@@ -476,14 +531,15 @@ class GossipNode:
                 ttl=GOSSIP_TTL,
                 is_compressed=False,
                 ground_truth=raw_state,
-                tokens_generated=0
+                tokens_generated=0,
+                ref_raw_bytes=byte_len
             )
 
             self.state_matrix[payload.payload_id] = raw_str
             self._seen_payloads.add(payload.payload_id)
 
             for nbr in self.graph.neighbors(self.node_id):
-                self.env.process(self._send_payload(nbr, payload, byte_len))
+                self.env.process(self._send_payload(nbr, payload, payload.ref_raw_bytes))
 
             yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
 
@@ -514,11 +570,12 @@ class GossipNode:
                 ttl=payload.ttl - 1,
                 is_compressed=False,
                 ground_truth=payload.ground_truth,
-                tokens_generated=0
+                tokens_generated=0,
+                ref_raw_bytes=payload.ref_raw_bytes
             )
             for nbr in self.graph.neighbors(self.node_id):
                 if nbr != payload.origin_node:
-                    self.env.process(self._send_payload(nbr, fwd_payload, payload.byte_size))
+                    self.env.process(self._send_payload(nbr, fwd_payload, fwd_payload.ref_raw_bytes))
 
 
 # ============================================================================
@@ -537,6 +594,10 @@ class EpidemicNode:
         self.metrics = metrics
         self.state_matrix: Dict[str, str] = {}
         self.buffer: Dict[str, NetworkPayload] = {}
+        # Sender-side delivery ledger: payload_id -> neighbor ids successfully delivered.
+        # Guarantees true anti-entropy semantics (each payload delivered to each neighbor
+        # at most once); only channel-failed transmissions are retried on later cycles.
+        self._delivered_to: Dict[str, Set[int]] = {}
         self.env.process(self._broadcast_loop())
         self.env.process(self._anti_entropy_loop())
 
@@ -557,7 +618,8 @@ class EpidemicNode:
                 is_compressed=False,
                 visited_nodes={self.node_id},
                 ground_truth=raw_state,
-                tokens_generated=0
+                tokens_generated=0,
+                ref_raw_bytes=byte_len
             )
 
             self.state_matrix[payload.payload_id] = raw_str
@@ -570,20 +632,28 @@ class EpidemicNode:
             yield self.env.timeout(random.uniform(1.0, 3.0))
             for nbr in list(self.graph.neighbors(self.node_id)):
                 for pid, payload in list(self.buffer.items()):
-                    if nbr not in payload.visited_nodes:
-                        self.env.process(self._send_payload(nbr, payload))
+                    if nbr in payload.visited_nodes:
+                        continue
+                    if nbr in self._delivered_to.get(pid, set()):
+                        continue
+                    self.env.process(self._send_payload(nbr, pid, payload))
 
-    def _send_payload(self, receiver_id: int, payload: NetworkPayload) -> simpy.events.ProcessGenerator:
+    def _send_payload(self, receiver_id: int, payload_id: str, payload: NetworkPayload) -> simpy.events.ProcessGenerator:
         success, latency, reason = self.ctrl.attempt_transmission(self.node_id, receiver_id, payload, payload.byte_size)
         self.metrics.record(TransmissionRecord(self.node_id, receiver_id, payload.payload_id,
                                                 self.env.now, payload.byte_size, success, reason))
         if not success:
             return
         yield self.env.timeout(latency)
+        self._delivered_to.setdefault(payload_id, set()).add(receiver_id)
         if receiver_id in _node_registry:
             _node_registry[receiver_id].receive_payload(payload)
 
     def receive_payload(self, payload: NetworkPayload) -> None:
+        # Duplicate suppression: concurrent anti-entropy sends from multiple
+        # neighbors can deliver the same payload twice before visited-set updates.
+        if payload.payload_id in self.state_matrix:
+            return
         self.state_matrix[payload.payload_id] = payload.raw_content
         self.metrics.record_decision(1.0)
         updated_visited = set(payload.visited_nodes) | {self.node_id}
@@ -596,9 +666,95 @@ class EpidemicNode:
             ttl=payload.ttl,
             is_compressed=False,
             visited_nodes=updated_visited,
-            ground_truth=payload.ground_truth
+            ground_truth=payload.ground_truth,
+            ref_raw_bytes=payload.ref_raw_bytes
         )
         self.buffer[payload.payload_id] = fwd_payload
+
+
+# ============================================================================
+# Shared Async Event Loop & vLLM Preflight Readiness Gate
+# ============================================================================
+
+_SHARED_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _get_shared_loop() -> asyncio.AbstractEventLoop:
+    """Returns a process-wide event loop reused across all compression calls.
+
+    Reusing one loop avoids leaking thousands of per-call event loops (each
+    holding selector file descriptors) over the ~2,500 compression events per
+    run, and lets the OS-level TCP connections to vLLM stay warm."""
+    global _SHARED_LOOP
+    if _SHARED_LOOP is None or _SHARED_LOOP.is_closed():
+        _SHARED_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_SHARED_LOOP)
+    return _SHARED_LOOP
+
+
+def preflight_vllm_endpoints(
+    ports: Optional[List[int]] = None,
+    max_wait_s: float = 1200.0,
+    probe_timeout_s: float = 3.0
+) -> None:
+    """Blocks until every vLLM endpoint answers /v1/models, then issues one warmup
+    completion per endpoint.
+
+    This gate prevents the single most common GPU-cluster failure mode: the
+    benchmark starting before model loading finishes, every live inference
+    timing out, and the entire agentic arm silently degrading to the
+    deterministic fallback (results would look valid but carry no LLM signal).
+    """
+    ports = ports or list(VLLM_BASE_PORTS)
+    loop = _get_shared_loop()
+
+    async def _probe(port: int) -> bool:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=probe_timeout_s)) as session:
+                async with session.get(f"http://localhost:{port}/v1/models") as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
+
+    async def _warmup(port: int) -> bool:
+        try:
+            payload = {
+                "model": VLLM_MODEL_NAME,
+                "messages": [{"role": "user", "content": "Reply with the single character: {"}],
+                "temperature": 0.0,
+                "max_tokens": 8,
+            }
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30.0)) as session:
+                async with session.post(f"http://localhost:{port}/v1/chat/completions", json=payload) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
+
+    ready = {p: False for p in ports}
+    deadline = time.time() + max_wait_s
+    print(f"[PREFLIGHT] Waiting for {len(ports)} vLLM endpoints (up to {max_wait_s:.0f}s): {ports}")
+    while time.time() < deadline and not all(ready.values()):
+        for p in ports:
+            if not ready[p]:
+                ready[p] = loop.run_until_complete(_probe(p))
+        if all(ready.values()):
+            break
+        pending = [p for p, ok in ready.items() if not ok]
+        print(f"[PREFLIGHT] Still loading: {pending} — retrying in 10 s...")
+        time.sleep(10)
+
+    if not all(ready.values()):
+        raise RuntimeError(
+            f"vLLM endpoints failed readiness within {max_wait_s:.0f}s: {[p for p, ok in ready.items() if not ok]}. "
+            "Launch them via run_gpu_experiments.sh / launch_vllm_cluster.sh first, "
+            "or run in deterministic CPU mode (--cpu or DDIL_DISABLE_VLLM=1)."
+        )
+
+    print("[PREFLIGHT] All endpoints answering. Issuing warmup completions (absorbs CUDA-graph capture)...")
+    for p in ports:
+        ok = loop.run_until_complete(_warmup(p))
+        print(f"[PREFLIGHT] Warmup port {p}: {'OK' if ok else 'FAILED (will fall back if it recurs)'}")
+    print("[PREFLIGHT] Complete.")
 
 
 # ============================================================================
@@ -670,17 +826,45 @@ class LLMAgentNode:
         fallback_json = json.dumps(fallback_obj, separators=(',', ':'))
         return fallback_json, len(fallback_json.encode('utf-8')), 30
 
-    async def _async_compress_state(self, raw_state: RawStateMatrix) -> Tuple[str, int, int]:
+    @staticmethod
+    def _apply_injection_to_content(content: str) -> str:
+        """Applies the same corruption operators used by the deterministic fallback to
+        a live SLM completion, so the hallucination-robustness experiment behaves
+        identically in GPU and CPU modes."""
+        try:
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                return content
+            corrupt_type = random.choice(["pos_drift", "bad_bat", "dropped_key", "scalar_err"])
+            if corrupt_type == "pos_drift" and isinstance(parsed.get("pos"), list) and len(parsed["pos"]) == 2:
+                parsed["pos"] = [round(parsed["pos"][0] + random.uniform(2.0, 5.0), 2),
+                                 round(parsed["pos"][1] + random.uniform(2.0, 5.0), 2)]
+            elif corrupt_type == "bad_bat" and "bat" in parsed:
+                parsed["bat"] = round(random.uniform(500.0, 999.0), 1)
+            elif corrupt_type == "dropped_key":
+                parsed.pop("pri", None)
+            elif corrupt_type == "scalar_err" and "vel" in parsed:
+                try:
+                    parsed["vel"] = float(parsed["vel"]) * 10.0
+                except (ValueError, TypeError):
+                    pass
+            return json.dumps(parsed, separators=(',', ':'))
+        except Exception:
+            return content
+
+    async def _async_compress_state(self, raw_state: RawStateMatrix) -> Tuple[str, int, int, bool]:
+        """Returns (content, byte_size, tokens_generated, used_fallback)."""
         if not self.config.enable_compression:
             raw_str = raw_state.to_json_str()
-            return raw_str, len(raw_str.encode('utf-8')), 0
+            return raw_str, len(raw_str.encode('utf-8')), 0, False
 
         # Inject controlled hallucination if requested
         should_corrupt = (self.config.injection_rate > 0.0 and random.random() < self.config.injection_rate)
 
         # CPU-only reproduction mode
         if os.environ.get("DDIL_DISABLE_VLLM", "").lower() in ("1", "true", "yes"):
-            return self._fallback_compress(raw_state, inject_corruption=should_corrupt)
+            content, nbytes, toks = self._fallback_compress(raw_state, inject_corruption=should_corrupt)
+            return content, nbytes, toks, True
 
         system_prompt = (
             "You are a task-oriented edge compression agent. Compress the telemetry JSON into a minimal JSON object with exact keys: "
@@ -699,7 +883,7 @@ class LLMAgentNode:
         }
 
         try:
-            timeout = aiohttp.ClientTimeout(total=2.0)
+            timeout = aiohttp.ClientTimeout(total=float(os.environ.get("DDIL_HTTP_TIMEOUT", "2.0")))
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(self.vllm_endpoint, json=payload_data) as resp:
                     if resp.status == 200:
@@ -710,12 +894,15 @@ class LLMAgentNode:
                             content = content.split("```json")[1].split("```")[0].strip()
                         elif "```" in content:
                             content = content.split("```")[1].split("```")[0].strip()
+                        if should_corrupt:
+                            content = self._apply_injection_to_content(content)
                         byte_size = len(content.encode('utf-8'))
-                        return content, byte_size, completion_tokens
+                        return content, byte_size, completion_tokens, False
         except Exception:
             pass
 
-        return self._fallback_compress(raw_state, inject_corruption=should_corrupt)
+        content, nbytes, toks = self._fallback_compress(raw_state, inject_corruption=should_corrupt)
+        return content, nbytes, toks, True
 
     def _broadcast_loop(self) -> simpy.events.ProcessGenerator:
         yield self.env.timeout(random.uniform(0.0, BROADCAST_INTERVAL))
@@ -723,19 +910,18 @@ class LLMAgentNode:
             raw_state = RawStateMatrix(origin_node=self.node_id, timestamp=self.env.now)
             ref_raw_bytes = len(raw_state.to_json_str().encode('utf-8'))
 
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            loop = _get_shared_loop()
 
-            compressed_str, actual_bytes, tokens_gen = loop.run_until_complete(
+            compressed_str, actual_bytes, tokens_gen, used_fallback = loop.run_until_complete(
                 self._async_compress_state(raw_state)
             )
 
             self.metrics.add_tokens(tokens_gen)
+            if used_fallback:
+                self.metrics.record_llm_fallback()
 
             # Sender-side Invariant Preservation Score (IPS) verification gate
+            is_injected = (self.config.injection_rate > 0.0)
             if self.config.enable_drift_check and self.config.enable_compression:
                 try:
                     parsed_compressed = json.loads(compressed_str)
@@ -745,12 +931,21 @@ class LLMAgentNode:
                     self.metrics.record_parse_outcome(success=is_valid, is_drift_failure=(not is_valid), ips=ips)
                     if not is_valid:
                         # Drop hallucinated output before transmitting over RF
+                        if is_injected:
+                            self.metrics.record_injection(rejected=True)
                         yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
                         continue
+                    if is_injected:
+                        self.metrics.record_injection(rejected=False)
                 except Exception:
                     self.metrics.record_parse_outcome(success=False, is_drift_failure=True)
+                    if is_injected:
+                        self.metrics.record_injection(rejected=True)
                     yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
                     continue
+            elif is_injected:
+                # Verification gate disabled: injected tokens pass unconditionally
+                self.metrics.record_injection(rejected=False)
 
             payload = NetworkPayload(
                 payload_id=raw_state.sequence_id,
@@ -761,7 +956,8 @@ class LLMAgentNode:
                 ttl=GOSSIP_TTL,
                 is_compressed=self.config.enable_compression,
                 ground_truth=raw_state,
-                tokens_generated=tokens_gen
+                tokens_generated=tokens_gen,
+                ref_raw_bytes=ref_raw_bytes
             )
 
             self.state_matrix[payload.payload_id] = compressed_str
@@ -769,15 +965,15 @@ class LLMAgentNode:
 
             for nbr in list(self.graph.neighbors(self.node_id)):
                 if not self.config.enable_link_memory:
-                    self.env.process(self._send_payload(nbr, payload, ref_raw_bytes))
+                    self.env.process(self._send_payload(nbr, payload, payload.ref_raw_bytes))
                 else:
                     score = self.link_scores.get(nbr, 0.5)
                     if score >= LINK_RELIABILITY_THRESHOLD or not self.config.enable_relay:
-                        self.env.process(self._send_payload(nbr, payload, ref_raw_bytes))
+                        self.env.process(self._send_payload(nbr, payload, payload.ref_raw_bytes))
                     else:
                         best_relay = self._find_best_relay(nbr)
                         target = best_relay if best_relay is not None else nbr
-                        self.env.process(self._send_payload(target, payload, ref_raw_bytes))
+                        self.env.process(self._send_payload(target, payload, payload.ref_raw_bytes))
 
             yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
 
@@ -860,12 +1056,12 @@ class LLMAgentNode:
                 ttl=payload.ttl - 1,
                 is_compressed=payload.is_compressed,
                 ground_truth=payload.ground_truth,
-                tokens_generated=payload.tokens_generated
+                tokens_generated=payload.tokens_generated,
+                ref_raw_bytes=payload.ref_raw_bytes
             )
             for nbr in self.graph.neighbors(self.node_id):
                 if nbr != payload.origin_node:
-                    ref_bytes = 450
-                    self.env.process(self._send_payload(nbr, fwd_payload, ref_bytes))
+                    self.env.process(self._send_payload(nbr, fwd_payload, fwd_payload.ref_raw_bytes))
 
 
 # Global Registry for node communication
@@ -905,10 +1101,13 @@ def execute_simulation_run(
     drop_rate: float,
     seed: int = RANDOM_SEED,
     config: Optional[RunConfig] = None
-) -> Tuple[float, float, int, float, int, float, float]:
+) -> Tuple[float, float, int, float, int, float, float, int, int, int, int, int, float]:
     """
     Executes one simulation run.
-    Returns: (sync_rate, delivery_rate, total_bytes, total_energy_joules, tokens_generated, mean_dpr, mean_ips)
+    Returns: (sync_rate, delivery_rate, total_bytes, total_energy_joules,
+              tokens_generated, mean_dpr, mean_ips, llm_fallbacks,
+              injections_generated, injections_rejected,
+              parse_successes, drift_failures, gate_pass_rate)
     """
     global _node_registry
     random.seed(seed)
@@ -941,8 +1140,208 @@ def execute_simulation_run(
         metrics.total_energy_joules,
         metrics.total_tokens_generated,
         metrics.mean_dpr,
-        metrics.mean_ips
+        metrics.mean_ips,
+        metrics.llm_fallbacks,
+        metrics.injections_generated,
+        metrics.injections_rejected,
+        metrics.parse_successes,
+        metrics.drift_failures,
+        metrics.gate_pass_rate
     )
+
+
+# Student-t critical values (two-sided, 95%) indexed by degrees of freedom;
+# beyond df=30 the normal approximation 1.96 is used.
+_T_CRIT_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+              8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+              15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+              25: 2.060, 30: 2.042}
+
+
+def ci95_halfwidth(values: List[float]) -> float:
+    """Half-width of the 95% confidence interval of the mean (Student-t)."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    s = statistics.stdev(values)
+    df = n - 1
+    t = _T_CRIT_95.get(df)
+    if t is None:
+        t = _T_CRIT_95.get(30, 1.96) if df < 30 else 1.96
+    return t * s / math.sqrt(n)
+
+
+# ============================================================================
+# Optional Weights & Biases logging (activates when WANDB_API_KEY is set)
+# ============================================================================
+
+_WANDB_RUN = None
+
+
+def init_wandb(suite: str, extra_config: Optional[dict] = None):
+    """Initializes W&B when WANDB_API_KEY is set. Never raises."""
+    global _WANDB_RUN
+    if not os.environ.get("WANDB_API_KEY"):
+        print("[WANDB] WANDB_API_KEY not set — W&B logging disabled.")
+        return None
+    try:
+        import wandb
+        config = {"suite": suite, "num_nodes": NUM_NODES, "sim_duration": SIM_DURATION,
+                  "model": VLLM_MODEL_NAME, "channel": "calibrated-gilbert-elliott",
+                  "broadcast_interval": BROADCAST_INTERVAL, "gossip_ttl": GOSSIP_TTL}
+        if extra_config:
+            config.update({k: v for k, v in extra_config.items()})
+        _WANDB_RUN = wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "incis2027-ddil"),
+            name=f"{suite}-N{NUM_NODES}-t{int(SIM_DURATION)}",
+            config=config, job_type=suite, reinit="finish_previous",
+        )
+        print(f"[WANDB] Logging '{suite}' -> project '{os.environ.get('WANDB_PROJECT', 'incis2027-ddil')}'")
+        return _WANDB_RUN
+    except Exception as e:
+        print(f"[WANDB] init failed ({e}) — continuing without W&B.")
+        _WANDB_RUN = None
+        return None
+
+
+def wandb_log_row(row: dict, step: int) -> None:
+    """Logs one per-run record (numeric fields only). Best-effort."""
+    if _WANDB_RUN is None:
+        return
+    try:
+        numeric = {k: v for k, v in row.items() if isinstance(v, (int, float))}
+        _WANDB_RUN.log(numeric, step=step)
+    except Exception:
+        pass
+
+
+def wandb_finish(artifacts: Optional[List[str]] = None) -> None:
+    """Logs result files as artifacts and closes the W&B run. Best-effort."""
+    global _WANDB_RUN
+    if _WANDB_RUN is None:
+        return
+    try:
+        import wandb
+        for path in (artifacts or []):
+            if path and os.path.exists(path):
+                art = wandb.Artifact(os.path.basename(path), type="results")
+                art.add_file(path)
+                _WANDB_RUN.log_artifact(art)
+        _WANDB_RUN.finish()
+        print("[WANDB] Run closed, artifacts uploaded.")
+    except Exception as e:
+        print(f"[WANDB] finish issue: {e}")
+    finally:
+        _WANDB_RUN = None
+
+
+# ============================================================================
+# Per-seed row builders (shared by the CLI suites and the parallel driver so the
+# parallel sweep produces byte-identical schemas; each run seeds itself, so
+# sharding seeds across processes is deterministic and embarrassingly parallel)
+# ============================================================================
+
+def benchmark_row_for(seed: int, dr: float, mode: str) -> dict:
+    (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+     fallbacks, inj_gen, inj_rej, _ps, _df, _gp) = execute_simulation_run(mode, dr, seed=seed)
+    return {
+        "seed": seed, "mode": mode, "drop_rate": dr,
+        "dpr_pct": round(dpr * 100, 2),
+        "sync_pct": round(sync * 100, 2),
+        "delivery_pct": round(delivery * 100, 2),
+        "delivered_bytes": total_bytes,
+        "energy_kj": round(energy / 1000.0, 3),
+        "tokens_generated": tokens,
+        "ips_score": round(ips, 4),
+        "llm_fallbacks": fallbacks,
+        "injections_generated": inj_gen,
+        "injections_rejected": inj_rej,
+    }
+
+
+def benchmark_rows_for_seed(seed: int, drop_rates: List[float]) -> List[dict]:
+    rows = []
+    for dr in drop_rates:
+        for mode in ("gossip", "epidemic", "agentic"):
+            rows.append(benchmark_row_for(seed, dr, mode))
+    return rows
+
+
+def ablation_rows_for_seed(seed: int, drop_rates: List[float],
+                           configs: Optional[List[RunConfig]] = None) -> List[dict]:
+    configs = configs or [
+        RunConfig(True, True, True, True, label="Full Agentic SLM"),
+        RunConfig(True, False, False, True, label="A1: No Link Memory"),
+        RunConfig(False, True, True, False, label="A2: No Compression"),
+        RunConfig(True, True, False, True, label="A3: No Relay Routing"),
+        RunConfig(True, True, True, False, label="A4: No Verification Gate"),
+    ]
+    rows = []
+    for cfg in configs:
+        for dr in drop_rates:
+            (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+             fallbacks, inj_gen, inj_rej, _ps, drift_fail, gate_pass) = execute_simulation_run(
+                "agentic", dr, seed=seed, config=cfg)
+            rows.append({
+                "seed": seed, "variant": cfg.label, "drop_rate": dr,
+                "dpr_pct": round(dpr * 100, 2),
+                "sync_pct": round(sync * 100, 2),
+                "delivery_pct": round(delivery * 100, 2),
+                "delivered_bytes": total_bytes,
+                "energy_kj": round(energy / 1000.0, 3),
+                "tokens_generated": tokens,
+                "ips_score": round(ips, 4),
+                "llm_fallbacks": fallbacks,
+                "injections_generated": inj_gen,
+                "injections_rejected": inj_rej,
+                "gate_pass_rate": round(gate_pass, 4),
+                "drift_failures": drift_fail,
+            })
+    return rows
+
+
+def sensitivity_rows_for_seed(seed: int, thresholds: List[float], drop_rates: List[float]) -> List[dict]:
+    rows = []
+    for th in thresholds:
+        cfg = RunConfig(enable_compression=True, enable_link_memory=True, enable_relay=True,
+                        enable_drift_check=True, ips_threshold=th, label=f"IPS theta={th}")
+        for dr in drop_rates:
+            (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+             fallbacks, inj_gen, inj_rej, _ps, drift_fail, gate_pass) = execute_simulation_run(
+                "agentic", dr, seed=seed, config=cfg)
+            rows.append({
+                "seed": seed, "ips_threshold": th, "drop_rate": dr,
+                "dpr_pct": round(dpr * 100, 2),
+                "sync_pct": round(sync * 100, 2),
+                "delivery_pct": round(delivery * 100, 2),
+                "ips_score": round(ips, 4),
+                "llm_fallbacks": fallbacks,
+                "gate_pass_rate": round(gate_pass, 4),
+                "drift_failures": drift_fail,
+            })
+    return rows
+
+
+def robustness_rows_for_seed(seed: int, injection_rates: List[float], drop_rate: float = 0.40) -> List[dict]:
+    rows = []
+    for rate in injection_rates:
+        cfg = RunConfig(enable_compression=True, enable_link_memory=True, enable_relay=True,
+                        enable_drift_check=True, injection_rate=rate, label=f"Inject {rate:.0%}")
+        (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+         fallbacks, inj_gen, inj_rej, _ps, _df, gate_pass) = execute_simulation_run(
+            "agentic", drop_rate=drop_rate, seed=seed, config=cfg)
+        recall = (inj_rej / inj_gen) if inj_gen > 0 else 1.0
+        rows.append({
+            "seed": seed, "injection_rate": rate, "drop_rate": drop_rate,
+            "dpr_pct": round(dpr * 100, 2),
+            "sync_pct": round(sync * 100, 2),
+            "injections_generated": inj_gen,
+            "injections_rejected": inj_rej,
+            "gate_recall": round(recall, 4),
+            "gate_pass_rate": round(gate_pass, 4),
+            "llm_fallbacks": fallbacks,
+        })
+    return rows
 
 
 # ============================================================================
@@ -1036,6 +1435,105 @@ def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[floa
 # Main Comparative Benchmark & Output Generators
 # ============================================================================
 
+def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: List[float]) -> None:
+    """Renders fig_sync_vs_drop.png and fig_energy_vs_drop.png from per-run CSV rows
+    (mean +/- 95% CI bands). Reusable by both the CLI suite and the parallel driver."""
+    drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
+    multi_seed = len(seeds) > 1
+
+    def agg(mode: str, dr: float, field: str, scale: float) -> Tuple[float, float]:
+        vals = [r[field] / scale for r in csv_rows
+                if r["mode"] == mode and abs(r["drop_rate"] - dr) < 1e-9]
+        return statistics.mean(vals), ci95_halfwidth(vals)
+
+    def series(mode: str, field: str, scale: float) -> Tuple[List[float], List[float]]:
+        pairs = [agg(mode, dr, field, scale) for dr in drop_rates]
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+
+    gossip_syncs, gossip_syncs_sd = series("gossip", "sync_pct", 100)
+    epidemic_syncs, epidemic_syncs_sd = series("epidemic", "sync_pct", 100)
+    agentic_syncs, agentic_syncs_sd = series("agentic", "sync_pct", 100)
+    gossip_energies, gossip_energies_sd = series("gossip", "energy_kj", 1 / 1000)
+    epidemic_energies, epidemic_energies_sd = series("epidemic", "energy_kj", 1 / 1000)
+    agentic_energies, agentic_energies_sd = series("agentic", "energy_kj", 1 / 1000)
+
+    # Plot 1: fig_sync_vs_drop.png
+    fig1, ax1 = plt.subplots(figsize=(10, 6), dpi=200)
+    ax1.plot(drop_percentages, gossip_syncs, 's--', color='#d62828', lw=2.2, ms=7,
+             markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
+             label='Baseline 1: Gossip Protocol (Raw JSON, TTL=3)')
+    ax1.plot(drop_percentages, epidemic_syncs, '^:', color='#f77f00', lw=2.2, ms=7,
+             markerfacecolor='#fcbf49', markeredgecolor='#f77f00', mew=1.5,
+             label='Baseline 2: Epidemic Routing (Store & Forward, Delivered-Once)')
+    ax1.plot(drop_percentages, agentic_syncs, 'o-', color='#0077b6', lw=2.8, ms=8,
+             markerfacecolor='#00b4d8', markeredgecolor='#023e8a', mew=1.5,
+             label='Proposed: Agentic SLM Protocol (Llama-3-8B + Link Memory)')
+
+    if multi_seed:
+        ax1.fill_between(drop_percentages,
+                         [m - s for m, s in zip(agentic_syncs, agentic_syncs_sd)],
+                         [m + s for m, s in zip(agentic_syncs, agentic_syncs_sd)],
+                         alpha=0.15, color='#0077b6', label='Agentic SLM ±95% CI')
+        ax1.fill_between(drop_percentages,
+                         [m - s for m, s in zip(gossip_syncs, gossip_syncs_sd)],
+                         [m + s for m, s in zip(gossip_syncs, gossip_syncs_sd)],
+                         alpha=0.12, color='#d62828', label='Gossip ±95% CI')
+
+    ax1.fill_between(drop_percentages, gossip_syncs, agentic_syncs, alpha=0.10, color='#0077b6')
+    for x, yg, ya in zip(drop_percentages, gossip_syncs, agentic_syncs):
+        ax1.annotate(f'{yg:.0f}%', (x, yg), textcoords='offset points', xytext=(0, -14), ha='center', fontsize=7, color='#d62828', fontweight='bold')
+        ax1.annotate(f'{ya:.0f}%', (x, ya), textcoords='offset points', xytext=(0, 10), ha='center', fontsize=7, color='#023e8a', fontweight='bold')
+
+    seed_note = f"Mean over {len(seeds)} paired seeds (±95% CI, Student-t)" if multi_seed else f"Seed {seeds[0]}"
+    ax1.set_title(f'Effective State Synchronization % Under Gilbert-Elliott DDIL Loss\n'
+                  f'{NUM_NODES}-Node Swarm Benchmark — {seed_note}',
+                  fontsize=12, fontweight='bold', pad=15)
+    ax1.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
+    ax1.set_ylabel('Effective State Synchronization (%)', fontsize=11)
+    ax1.set_xlim(-2, 82); ax1.set_ylim(0, 105)
+    ax1.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
+    ax1.legend(loc='lower left', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
+    fig1.tight_layout()
+    fig1.savefig(PLOT_SYNC_PATH)
+    plt.close(fig1)
+    print(f"[OUTPUT] Plot 1 saved to: {PLOT_SYNC_PATH}")
+
+    # Plot 2: fig_energy_vs_drop.png
+    fig2, ax2 = plt.subplots(figsize=(10, 6), dpi=200)
+    ax2.plot(drop_percentages, gossip_energies, 's--', color='#d62828', lw=2.2, ms=7,
+             markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
+             label='Baseline 1: Gossip Protocol')
+    ax2.plot(drop_percentages, epidemic_energies, '^:', color='#f77f00', lw=2.5, ms=8,
+             markerfacecolor='#f4a261', markeredgecolor='#e76f51', mew=1.5,
+             label='Baseline 2: Epidemic Routing (Flooding Overhead Explodes)')
+    ax2.plot(drop_percentages, agentic_energies, 'o-', color='#2a9d8f', lw=2.8, ms=8,
+             markerfacecolor='#e9c46a', markeredgecolor='#264653', mew=1.5,
+             label='Proposed: Agentic SLM Protocol (Frugal State Quantization)')
+
+    if multi_seed:
+        ax2.fill_between(drop_percentages,
+                         [m - s for m, s in zip(agentic_energies, agentic_energies_sd)],
+                         [m + s for m, s in zip(agentic_energies, agentic_energies_sd)],
+                         alpha=0.15, color='#2a9d8f', label='Agentic SLM ±95% CI')
+        ax2.fill_between(drop_percentages,
+                         [m - s for m, s in zip(epidemic_energies, epidemic_energies_sd)],
+                         [m + s for m, s in zip(epidemic_energies, epidemic_energies_sd)],
+                         alpha=0.12, color='#f77f00', label='Epidemic ±95% CI')
+
+    ax2.set_title(f'Total Swarm Parametric Energy Expenditure (kJ) vs. Drop Rate\n'
+                  f'Parametric Model: RF Tx (0.05 J/B) vs. SLM Compute (0.01 J/Token) — {seed_note}',
+                  fontsize=12, fontweight='bold', pad=15)
+    ax2.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
+    ax2.set_ylabel('Total Swarm Energy Consumption (kJ)', fontsize=11)
+    ax2.set_xlim(-2, 82)
+    ax2.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
+    ax2.legend(loc='upper right', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
+    fig2.tight_layout()
+    fig2.savefig(PLOT_ENERGY_PATH)
+    plt.close(fig2)
+    print(f"[OUTPUT] Plot 2 saved to: {PLOT_ENERGY_PATH}")
+
+
 def run_empirical_benchmark_suite(
     seeds: Optional[List[int]] = None,
     drop_rates: Optional[List[float]] = None,
@@ -1053,27 +1551,18 @@ def run_empirical_benchmark_suite(
     print(f"  Seeds: {len(seeds)} paired seeds: {seeds[:5]}{'...' if len(seeds)>5 else ''}")
     print("=" * 76)
 
-    data: Dict[str, Dict[float, List[Tuple[float, float, int, float, int, float, float]]]] = {
-        "gossip": {}, "epidemic": {}, "agentic": {}
-    }
     csv_rows: List[dict] = []
 
     t_start = time.time()
+    init_wandb("benchmark", extra_config={"seeds": seeds, "drop_rates": drop_rates,
+                                            "multi_seed": multi_seed})
+    step_counter = 0
     for seed in seeds:
-        for dr in drop_rates:
-            for mode in ("gossip", "epidemic", "agentic"):
-                sync, delivery, total_bytes, energy, tokens, dpr, ips = execute_simulation_run(mode, dr, seed=seed)
-                data[mode].setdefault(dr, []).append((sync, delivery, total_bytes, energy, tokens, dpr, ips))
-                csv_rows.append({
-                    "seed": seed, "mode": mode, "drop_rate": dr,
-                    "dpr_pct": round(dpr * 100, 2),
-                    "sync_pct": round(sync * 100, 2),
-                    "delivery_pct": round(delivery * 100, 2),
-                    "delivered_bytes": total_bytes,
-                    "energy_kj": round(energy / 1000.0, 3),
-                    "tokens_generated": tokens,
-                    "ips_score": round(ips, 4)
-                })
+        seed_rows = benchmark_rows_for_seed(seed, drop_rates)
+        csv_rows.extend(seed_rows)
+        for r in seed_rows:
+            wandb_log_row(r, step=step_counter); step_counter += 1
+        print(f"  [seed {seed}] cumulative runs: {len(csv_rows)}", flush=True)
 
     elapsed = time.time() - t_start
     print(f"\n[DONE] Benchmark sweep ({len(seeds)} seeds x {len(drop_rates)} drops x 3 modes) completed in {elapsed/60:.1f} min")
@@ -1085,112 +1574,40 @@ def run_empirical_benchmark_suite(
             writer.writerows(csv_rows)
         print(f"[OUTPUT] Raw per-run results CSV written to: {csv_out}")
 
+    # Fallback-contamination audit: warn loudly if live inference silently degraded
+    agentic_rows = [r for r in csv_rows if r["mode"] == "agentic"]
+    if agentic_rows and not multi_seed:
+        total_fb = sum(r["llm_fallbacks"] for r in agentic_rows)
+        if total_fb > 0.10 * sum(1 for r in csv_rows if r["mode"] == "agentic"):
+            print(f"[WARNING] Agentic fallback rate {total_fb} compressions exceeded 10% — "
+                  "live-vLLM results may be contaminated by deterministic fallback. "
+                  "Check endpoint readiness (see preflight_vllm_endpoints).")
+
     def agg(mode: str, dr: float) -> Dict[str, Tuple[float, float]]:
-        runs = data[mode][dr]
+        """Aggregate per-run CSV rows -> (mean, 95% CI). Energy held in joules
+        internally (row field is kJ, scale 1e-3 converts kJ -> J)."""
+        fields = {"sync": ("sync_pct", 100.0), "delivery": ("delivery_pct", 100.0),
+                  "bytes": ("delivered_bytes", 1.0), "energy": ("energy_kj", 1e-3),
+                  "tokens": ("tokens_generated", 1.0), "dpr": ("dpr_pct", 100.0),
+                  "ips": ("ips_score", 1.0)}
         out = {}
-        for idx, key in enumerate(("sync", "delivery", "bytes", "energy", "tokens", "dpr", "ips")):
-            vals = [r[idx] for r in runs]
-            out[key] = (statistics.mean(vals), statistics.stdev(vals) if len(vals) > 1 else 0.0)
+        for key, (field, scale) in fields.items():
+            vals = [r[field] / scale for r in csv_rows
+                    if r["mode"] == mode and abs(r["drop_rate"] - dr) < 1e-9]
+            out[key] = (statistics.mean(vals), ci95_halfwidth(vals))
         return out
 
     agg_results: Dict[str, Dict[float, Dict[str, Tuple[float, float]]]] = {
         mode: {dr: agg(mode, dr) for dr in drop_rates} for mode in ("gossip", "epidemic", "agentic")
     }
 
-    drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
-
-    def series(mode: str, key: str, scale: float) -> Tuple[List[float], List[float]]:
-        means = [agg(mode, dr)[key][0] * scale for dr in drop_rates]
-        stds = [agg(mode, dr)[key][1] * scale for dr in drop_rates]
-        return means, stds
-
     if make_plots:
-        gossip_syncs, gossip_syncs_sd = series("gossip", "sync", 100)
-        epidemic_syncs, epidemic_syncs_sd = series("epidemic", "sync", 100)
-        agentic_syncs, agentic_syncs_sd = series("agentic", "sync", 100)
-        gossip_energies, gossip_energies_sd = series("gossip", "energy", 1 / 1000)
-        epidemic_energies, epidemic_energies_sd = series("epidemic", "energy", 1 / 1000)
-        agentic_energies, agentic_energies_sd = series("agentic", "energy", 1 / 1000)
-
-        # Plot 1: fig_sync_vs_drop.png
-        fig1, ax1 = plt.subplots(figsize=(10, 6), dpi=200)
-        ax1.plot(drop_percentages, gossip_syncs, 's--', color='#d62828', lw=2.2, ms=7,
-                 markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
-                 label='Baseline 1: Gossip Protocol (Raw JSON, TTL=3)')
-        ax1.plot(drop_percentages, epidemic_syncs, '^:', color='#f77f00', lw=2.2, ms=7,
-                 markerfacecolor='#fcbf49', markeredgecolor='#f77f00', mew=1.5,
-                 label='Baseline 2: Epidemic Routing (Store & Forward, Unbounded)')
-        ax1.plot(drop_percentages, agentic_syncs, 'o-', color='#0077b6', lw=2.8, ms=8,
-                 markerfacecolor='#00b4d8', markeredgecolor='#023e8a', mew=1.5,
-                 label='Proposed: Agentic SLM Protocol (Llama-3-8B BF16 + Link Memory)')
-
-        if multi_seed:
-            ax1.fill_between(drop_percentages,
-                             [m - s for m, s in zip(agentic_syncs, agentic_syncs_sd)],
-                             [m + s for m, s in zip(agentic_syncs, agentic_syncs_sd)],
-                             alpha=0.15, color='#0077b6', label='Agentic SLM ±1 std')
-            ax1.fill_between(drop_percentages,
-                             [m - s for m, s in zip(gossip_syncs, gossip_syncs_sd)],
-                             [m + s for m, s in zip(gossip_syncs, gossip_syncs_sd)],
-                             alpha=0.12, color='#d62828', label='Gossip ±1 std')
-
-        ax1.fill_between(drop_percentages, gossip_syncs, agentic_syncs, alpha=0.10, color='#0077b6')
-        for x, yg, ya in zip(drop_percentages, gossip_syncs, agentic_syncs):
-            ax1.annotate(f'{yg:.0f}%', (x, yg), textcoords='offset points', xytext=(0, -14), ha='center', fontsize=7, color='#d62828', fontweight='bold')
-            ax1.annotate(f'{ya:.0f}%', (x, ya), textcoords='offset points', xytext=(0, 10), ha='center', fontsize=7, color='#023e8a', fontweight='bold')
-
-        seed_note = f"Mean over {len(seeds)} paired seeds (±95% CI)" if multi_seed else f"Seed {seeds[0]}"
-        ax1.set_title(f'Effective State Synchronization % Under Gilbert-Elliott DDIL Loss\n'
-                      f'{NUM_NODES}-Node Swarm Benchmark — {seed_note}',
-                      fontsize=12, fontweight='bold', pad=15)
-        ax1.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
-        ax1.set_ylabel('Effective State Synchronization (%)', fontsize=11)
-        ax1.set_xlim(-2, 82); ax1.set_ylim(0, 105)
-        ax1.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
-        ax1.legend(loc='lower left', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
-        fig1.tight_layout()
-        fig1.savefig(PLOT_SYNC_PATH)
-        plt.close(fig1)
-        print(f"[OUTPUT] Plot 1 saved to: {PLOT_SYNC_PATH}")
-
-        # Plot 2: fig_energy_vs_drop.png
-        fig2, ax2 = plt.subplots(figsize=(10, 6), dpi=200)
-        ax2.plot(drop_percentages, gossip_energies, 's--', color='#d62828', lw=2.2, ms=7,
-                 markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
-                 label='Baseline 1: Gossip Protocol')
-        ax2.plot(drop_percentages, epidemic_energies, '^:', color='#f77f00', lw=2.5, ms=8,
-                 markerfacecolor='#f4a261', markeredgecolor='#e76f51', mew=1.5,
-                 label='Baseline 2: Epidemic Routing (Flooding Overhead Explodes)')
-        ax2.plot(drop_percentages, agentic_energies, 'o-', color='#2a9d8f', lw=2.8, ms=8,
-                 markerfacecolor='#e9c46a', markeredgecolor='#264653', mew=1.5,
-                 label='Proposed: Agentic SLM Protocol (Frugal State Quantization)')
-
-        if multi_seed:
-            ax2.fill_between(drop_percentages,
-                             [m - s for m, s in zip(agentic_energies, agentic_energies_sd)],
-                             [m + s for m, s in zip(agentic_energies, agentic_energies_sd)],
-                             alpha=0.15, color='#2a9d8f', label='Agentic SLM ±1 std')
-            ax2.fill_between(drop_percentages,
-                             [m - s for m, s in zip(epidemic_energies, epidemic_energies_sd)],
-                             [m + s for m, s in zip(epidemic_energies, epidemic_energies_sd)],
-                             alpha=0.12, color='#f77f00', label='Epidemic ±1 std')
-
-        ax2.set_title(f'Total Swarm Parametric Energy Expenditure (kJ) vs. Drop Rate\n'
-                      f'Parametric Model: RF Tx (0.05 J/B) vs. SLM Compute (0.01 J/Token) — {seed_note}',
-                      fontsize=12, fontweight='bold', pad=15)
-        ax2.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
-        ax2.set_ylabel('Total Swarm Energy Consumption (kJ)', fontsize=11)
-        ax2.set_xlim(-2, 82)
-        ax2.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
-        ax2.legend(loc='upper right', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
-        fig2.tight_layout()
-        fig2.savefig(PLOT_ENERGY_PATH)
-        plt.close(fig2)
-        print(f"[OUTPUT] Plot 2 saved to: {PLOT_ENERGY_PATH}")
+        render_benchmark_plots(csv_rows, seeds, drop_rates)
 
     severe_dr = max(drop_rates)
     export_latex_booktabs_table(agg_results["gossip"][severe_dr], agg_results["epidemic"][severe_dr],
                                 agg_results["agentic"][severe_dr], drop_rate_pct=severe_dr * 100)
+    wandb_finish(artifacts=[p for p in (csv_out, PLOT_SYNC_PATH, PLOT_ENERGY_PATH) if p and os.path.exists(p)])
     return agg_results
 
 
@@ -1201,7 +1618,8 @@ def run_empirical_benchmark_suite(
 def run_ablation_suite(
     seeds: Optional[List[int]] = None,
     drop_rates: Optional[List[float]] = None,
-    make_plots: bool = True
+    make_plots: bool = True,
+    csv_out: Optional[str] = None
 ) -> Dict[str, Dict[float, Dict[str, Tuple[float, float]]]]:
     seeds = seeds or [RANDOM_SEED]
     drop_rates = drop_rates if drop_rates is not None else list(DROP_RATE_SWEEP)
@@ -1221,65 +1639,52 @@ def run_ablation_suite(
     print(f"  Nodes: {NUM_NODES} | Duration: {SIM_DURATION}t | Seeds: {len(seeds)}")
     print("=" * 76)
 
-    variant_data: Dict[str, Dict[float, List[Tuple[float, float, int, float, int, float, float]]]] = {
-        cfg.label: {} for cfg in ablation_configs
-    }
+    csv_rows: List[dict] = []
 
     t_start = time.time()
-    for cfg in ablation_configs:
-        for seed in seeds:
-            for dr in drop_rates:
-                sync, delivery, total_bytes, energy, tokens, dpr, ips = execute_simulation_run(
-                    "agentic", dr, seed=seed, config=cfg
-                )
-                variant_data[cfg.label].setdefault(dr, []).append((sync, delivery, total_bytes, energy, tokens, dpr, ips))
+    init_wandb("ablation", extra_config={"seeds": seeds, "drop_rates": drop_rates,
+                                          "variants": [c.label for c in ablation_configs]})
+    step_counter = 0
+    for seed in seeds:
+        seed_rows = ablation_rows_for_seed(seed, drop_rates, configs=ablation_configs)
+        csv_rows.extend(seed_rows)
+        for r in seed_rows:
+            wandb_log_row(r, step=step_counter); step_counter += 1
+        print(f"  [seed {seed}] cumulative runs: {len(csv_rows)}", flush=True)
 
     elapsed = time.time() - t_start
     print(f"\n[DONE] Ablation suite completed in {elapsed/60:.1f} min")
 
-    agg_ablation: Dict[str, Dict[float, Dict[str, Tuple[float, float]]]] = {}
-    for cfg in ablation_configs:
-        agg_ablation[cfg.label] = {}
-        for dr in drop_rates:
-            runs = variant_data[cfg.label][dr]
-            out = {}
-            for idx, key in enumerate(("sync", "delivery", "bytes", "energy", "tokens", "dpr", "ips")):
-                vals = [r[idx] for r in runs]
-                out[key] = (statistics.mean(vals), statistics.stdev(vals) if len(vals) > 1 else 0.0)
-            agg_ablation[cfg.label][dr] = out
+    if csv_out:
+        with open(csv_out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(csv_rows)
+        print(f"[OUTPUT] Ablation per-run results CSV written to: {csv_out}")
+
+    def agg_variant(label: str, dr: float) -> Dict[str, Tuple[float, float]]:
+        fields = {"sync": ("sync_pct", 100.0), "delivery": ("delivery_pct", 100.0),
+                  "bytes": ("delivered_bytes", 1.0), "energy": ("energy_kj", 1e-3),
+                  "tokens": ("tokens_generated", 1.0), "dpr": ("dpr_pct", 100.0),
+                  "ips": ("ips_score", 1.0)}
+        out = {}
+        for key, (field, scale) in fields.items():
+            vals = [r[field] / scale for r in csv_rows
+                    if r["variant"] == label and abs(r["drop_rate"] - dr) < 1e-9]
+            out[key] = (statistics.mean(vals), ci95_halfwidth(vals))
+        return out
+
+    agg_ablation: Dict[str, Dict[float, Dict[str, Tuple[float, float]]]] = {
+        cfg.label: {dr: agg_variant(cfg.label, dr) for dr in drop_rates} for cfg in ablation_configs
+    }
 
     if make_plots:
-        fig3, ax3 = plt.subplots(figsize=(10, 6), dpi=200)
-        styles = {
-            "Full Agentic SLM":         {"color": "#0077b6", "marker": "o", "ls": "-", "lw": 2.8},
-            "A1: No Link Memory":       {"color": "#d62828", "marker": "s", "ls": "--", "lw": 2.2},
-            "A2: No Compression":       {"color": "#e76f51", "marker": "x", "ls": "-.", "lw": 2.2},
-            "A3: No Relay Routing":     {"color": "#f77f00", "marker": "^", "ls": ":", "lw": 2.2},
-            "A4: No Verification Gate": {"color": "#2a9d8f", "marker": "D", "ls": "-.", "lw": 2.0},
-        }
-
-        for cfg in ablation_configs:
-            st = styles[cfg.label]
-            sync_means = [agg_ablation[cfg.label][dr]["sync"][0] * 100 for dr in drop_rates]
-            ax3.plot(drop_percentages, sync_means, color=st["color"], marker=st["marker"],
-                     ls=st["ls"], lw=st["lw"], ms=7, label=cfg.label)
-
-        ax3.set_title('Ablation Study: State Synchronization % vs. Drop Rate\n'
-                      'Component Contributions (Compression, EMA Memory, Relay, IPS Verification)',
-                      fontsize=12, fontweight='bold', pad=15)
-        ax3.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
-        ax3.set_ylabel('Effective State Synchronization (%)', fontsize=11)
-        ax3.set_xlim(-2, 82); ax3.set_ylim(0, 105)
-        ax3.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
-        ax3.legend(loc='lower left', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
-        fig3.tight_layout()
-        fig3.savefig(PLOT_ABLATION_PATH)
-        plt.close(fig3)
-        print(f"[OUTPUT] Ablation Plot saved to: {PLOT_ABLATION_PATH}")
+        render_ablation_plot(csv_rows, drop_rates)
 
     severe_dr = max(drop_rates)
     severe_results = {cfg.label: agg_ablation[cfg.label][severe_dr] for cfg in ablation_configs}
     export_ablation_latex_table(severe_results, drop_rate_pct=severe_dr * 100)
+    wandb_finish(artifacts=[p for p in (csv_out, PLOT_ABLATION_PATH) if p and os.path.exists(p)])
     return agg_ablation
 
 
@@ -1290,7 +1695,8 @@ def run_ablation_suite(
 def run_sensitivity_experiment(
     seeds: Optional[List[int]] = None,
     thresholds: Optional[List[float]] = None,
-    drop_rates: Optional[List[float]] = None
+    drop_rates: Optional[List[float]] = None,
+    csv_out: Optional[str] = None
 ) -> Dict[float, Dict[float, Dict[str, Tuple[float, float]]]]:
     seeds = seeds or [RANDOM_SEED]
     thresholds = thresholds or [0.90, 0.95, 0.98]
@@ -1301,7 +1707,10 @@ def run_sensitivity_experiment(
     print("=" * 76)
 
     results: Dict[float, Dict[float, Dict[str, Tuple[float, float]]]] = {}
+    csv_rows: List[dict] = []
 
+    init_wandb("sensitivity", extra_config={"seeds": seeds, "thresholds": thresholds, "drop_rates": drop_rates})
+    step_counter = 0
     for th in thresholds:
         results[th] = {}
         cfg = RunConfig(enable_compression=True, enable_link_memory=True, enable_relay=True,
@@ -1311,16 +1720,42 @@ def run_sensitivity_experiment(
             for s in seeds:
                 res = execute_simulation_run("agentic", dr, seed=s, config=cfg)
                 runs.append(res)
+                (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+                 fallbacks, inj_gen, inj_rej, parse_succ, drift_fail, gate_pass) = res
+                row = {
+                    "seed": s, "ips_threshold": th, "drop_rate": dr,
+                    "dpr_pct": round(dpr * 100, 2),
+                    "sync_pct": round(sync * 100, 2),
+                    "delivery_pct": round(delivery * 100, 2),
+                    "ips_score": round(ips, 4),
+                    "llm_fallbacks": fallbacks,
+                    "gate_pass_rate": round(gate_pass, 4),
+                    "drift_failures": drift_fail
+                }
+                csv_rows.append(row)
+                wandb_log_row(row, step=step_counter); step_counter += 1
             dpr_vals = [r[5] for r in runs]
             sync_vals = [r[0] for r in runs]
             del_vals = [r[1] for r in runs]
+            ips_vals = [r[6] for r in runs]
             results[th][dr] = {
-                "dpr": (statistics.mean(dpr_vals), statistics.stdev(dpr_vals) if len(dpr_vals) > 1 else 0.0),
-                "sync": (statistics.mean(sync_vals), statistics.stdev(sync_vals) if len(sync_vals) > 1 else 0.0),
-                "delivery": (statistics.mean(del_vals), statistics.stdev(del_vals) if len(del_vals) > 1 else 0.0),
+                "dpr": (statistics.mean(dpr_vals), ci95_halfwidth(dpr_vals)),
+                "sync": (statistics.mean(sync_vals), ci95_halfwidth(sync_vals)),
+                "delivery": (statistics.mean(del_vals), ci95_halfwidth(del_vals)),
+                "ips": (statistics.mean(ips_vals), ci95_halfwidth(ips_vals)),
             }
-            print(f"  [theta={th:.2f} | Drop {dr:.0%}] DPR: {results[th][dr]['dpr'][0]:.1%} | Sync: {results[th][dr]['sync'][0]:.1%} | Deliv: {results[th][dr]['delivery'][0]:.1%}")
+            print(f"  [theta={th:.2f} | Drop {dr:.0%}] DPR: {results[th][dr]['dpr'][0]:.1%} | "
+                  f"Sync: {results[th][dr]['sync'][0]:.1%} | Deliv: {results[th][dr]['delivery'][0]:.1%} | "
+                  f"MeanIPS: {results[th][dr]['ips'][0]:.3f}")
 
+    if csv_out:
+        with open(csv_out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(csv_rows)
+        print(f"[OUTPUT] Sensitivity per-run results CSV written to: {csv_out}")
+
+    wandb_finish(artifacts=[csv_out] if csv_out and os.path.exists(csv_out) else [])
     return results
 
 
@@ -1330,41 +1765,77 @@ def run_sensitivity_experiment(
 
 def run_robustness_experiment(
     seeds: Optional[List[int]] = None,
-    injection_rates: Optional[List[float]] = None
+    injection_rates: Optional[List[float]] = None,
+    drop_rate: float = 0.40,
+    csv_out: Optional[str] = None
 ) -> Dict[float, Dict[str, float]]:
+    """Hallucination-injection robustness with directly MEASURED gate performance.
+
+    For each injection rate we count how many injected (corrupted) tokens the
+    sender-side IPS gate rejects. Gate recall = rejected / injected; the gate
+    false-accept rate = 1 - recall. Downstream damage is measured by DPR and
+    state synchronization. No proxy formulas: every number is counted.
+    """
     seeds = seeds or [RANDOM_SEED]
     injection_rates = injection_rates or [0.0, 0.05, 0.10, 0.20, 0.50]
 
     print("\n" + "=" * 76)
-    print("  HALLUCINATION INJECTION ROBUSTNESS EXPERIMENT")
+    print("  HALLUCINATION INJECTION ROBUSTNESS EXPERIMENT (measured gate recall/FAR)")
     print("=" * 76)
 
     robustness_results: Dict[float, Dict[str, float]] = {}
+    csv_rows: List[dict] = []
 
+    init_wandb("robustness", extra_config={"seeds": seeds, "injection_rates": injection_rates, "drop_rate": drop_rate})
+    step_counter = 0
     for rate in injection_rates:
         cfg = RunConfig(enable_compression=True, enable_link_memory=True, enable_relay=True,
                         enable_drift_check=True, injection_rate=rate, label=f"Inject {rate:.0%}")
-        dpr_list, sync_list = [], []
+        dpr_list, sync_list, recall_list = [], [], []
         for s in seeds:
-            sync, delivery, total_bytes, energy, tokens, dpr, ips = execute_simulation_run(
-                "agentic", drop_rate=0.40, seed=s, config=cfg
+            (sync, delivery, total_bytes, energy, tokens, dpr, ips,
+             fallbacks, inj_gen, inj_rej, parse_succ, drift_fail, gate_pass) = execute_simulation_run(
+                "agentic", drop_rate=drop_rate, seed=s, config=cfg
             )
             dpr_list.append(dpr)
             sync_list.append(sync)
+            recall = (inj_rej / inj_gen) if inj_gen > 0 else 1.0
+            recall_list.append(recall)
+            row = {
+                "seed": s, "injection_rate": rate, "drop_rate": drop_rate,
+                "dpr_pct": round(dpr * 100, 2),
+                "sync_pct": round(sync * 100, 2),
+                "injections_generated": inj_gen,
+                "injections_rejected": inj_rej,
+                "gate_recall": round(recall, 4),
+                "gate_pass_rate": round(gate_pass, 4),
+                "llm_fallbacks": fallbacks
+            }
+            csv_rows.append(row)
+            wandb_log_row(row, step=step_counter); step_counter += 1
 
         mean_dpr = statistics.mean(dpr_list)
         mean_sync = statistics.mean(sync_list)
-        false_accept_proxy = max(0.0, (1.0 - mean_dpr) * rate)
-        precision_proxy = 1.0 - false_accept_proxy
+        mean_recall = statistics.mean(recall_list) if rate > 0 else 1.0
+        far = 1.0 - mean_recall
 
         robustness_results[rate] = {
             "dpr": mean_dpr,
             "sync": mean_sync,
-            "precision": precision_proxy,
-            "false_accept_rate": false_accept_proxy
+            "gate_recall": mean_recall,
+            "gate_false_accept_rate": far
         }
-        print(f"  [Inject Rate: {rate:4.0%}] DPR: {mean_dpr:.1%} | Sync: {mean_sync:.1%} | Precision: {precision_proxy:.1%} | FAR: {false_accept_proxy:.1%}")
+        print(f"  [Inject Rate: {rate:4.0%}] DPR: {mean_dpr:.1%} | Sync: {mean_sync:.1%} | "
+              f"Gate Recall: {mean_recall:.1%} | Gate FAR: {far:.1%}")
 
+    if csv_out:
+        with open(csv_out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(csv_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(csv_rows)
+        print(f"[OUTPUT] Robustness per-run results CSV written to: {csv_out}")
+
+    wandb_finish(artifacts=[csv_out] if csv_out and os.path.exists(csv_out) else [])
     return robustness_results
 
 
@@ -1373,6 +1844,11 @@ def run_robustness_experiment(
 # ============================================================================
 
 def interactive_cli_bootstrapper() -> None:
+    # Batch-safety: never attempt interactive input without a TTY
+    if sys.stdin is None or not sys.stdin.isatty():
+        print("[MODE] No interactive terminal available — running standard benchmark with defaults.")
+        run_empirical_benchmark_suite()
+        return
     print("\n" + "=" * 76)
     print("  ==================================================================")
     print("  *   EMPIRICAL DDIL MULTI-AGENT SWARM BENCHMARK SUITE — InCIS 2027  *")
@@ -1451,7 +1927,8 @@ def parse_args() -> argparse.Namespace:
         description="Empirical DDIL swarm benchmark: Gossip vs Epidemic vs Agentic SLM."
     )
     parser.add_argument("--mode", choices=["interactive", "benchmark", "ablation", "fast", "all", "sensitivity", "robustness"], default="interactive",
-                        help="Execution mode (default: interactive CLI bootstrapper)")
+                        help="Execution mode (default: interactive CLI bootstrapper; auto-selects "
+                             "benchmark defaults when stdin is not a TTY, e.g. in batch jobs)")
     parser.add_argument("--seeds", type=int, nargs="+", default=[42],
                         help="RNG seeds for multi-seed aggregation (e.g. --seeds 42 43 44)")
     parser.add_argument("--drop-rates", type=float, nargs="+", default=None,
@@ -1461,6 +1938,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--csv-out", default="ddil_results.csv", help="CSV export filename")
     parser.add_argument("--cpu", action="store_true", help="Force deterministic CPU fallback mode")
     parser.add_argument("--no-plots", action="store_true", help="Skip figure generation")
+    parser.add_argument("--skip-preflight", action="store_true",
+                        help="Skip the vLLM endpoint readiness gate (not recommended)")
+    parser.add_argument("--preflight-wait", type=float, default=1200.0,
+                        help="Max seconds to wait for vLLM endpoint readiness (default 1200)")
     return parser.parse_args()
 
 
@@ -1469,6 +1950,18 @@ if __name__ == "__main__":
 
     if args.cpu:
         os.environ["DDIL_DISABLE_VLLM"] = "1"
+
+    live_mode = not os.environ.get("DDIL_DISABLE_VLLM", "").lower() in ("1", "true", "yes")
+
+    if live_mode and not args.skip_preflight:
+        preflight_vllm_endpoints(max_wait_s=args.preflight_wait)
+
+    # Non-TTY guard: batch schedulers (SLURM/tmux/nohup) provide no stdin; fall back
+    # to the standard benchmark instead of hanging or crashing on input().
+    interactive_requested = (args.mode == "interactive" and len(sys.argv) == 1)
+    if interactive_requested and sys.stdin is not None and not sys.stdin.isatty():
+        print("[MODE] Non-interactive stdin detected — running standard benchmark with defaults.")
+        args.mode = "benchmark"
 
     if args.mode != "interactive" or len(sys.argv) > 1:
         NUM_NODES = args.nodes
@@ -1480,7 +1973,8 @@ if __name__ == "__main__":
             run_empirical_benchmark_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP,
                                           csv_out=args.csv_out, make_plots=not args.no_plots)
         elif args.mode == "ablation":
-            run_ablation_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP, make_plots=not args.no_plots)
+            run_ablation_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP,
+                               make_plots=not args.no_plots, csv_out=args.csv_out)
         elif args.mode == "fast":
             SIM_DURATION = 10.0
             run_empirical_benchmark_suite(seeds=args.seeds, drop_rates=[0.0, 0.40, 0.80],
@@ -1488,11 +1982,16 @@ if __name__ == "__main__":
         elif args.mode == "all":
             run_empirical_benchmark_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP,
                                           csv_out=args.csv_out, make_plots=not args.no_plots)
-            run_ablation_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP, make_plots=not args.no_plots)
+            run_ablation_suite(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP,
+                               make_plots=not args.no_plots, csv_out=args.csv_out)
+            run_sensitivity_experiment(seeds=args.seeds, drop_rates=[0.0, 0.40, 0.80],
+                                       csv_out=args.csv_out.replace(".csv", "_sensitivity.csv"))
+            run_robustness_experiment(seeds=args.seeds,
+                                      csv_out=args.csv_out.replace(".csv", "_robustness.csv"))
         elif args.mode == "sensitivity":
-            run_sensitivity_experiment(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP)
+            run_sensitivity_experiment(seeds=args.seeds, drop_rates=DROP_RATE_SWEEP, csv_out=args.csv_out)
         elif args.mode == "robustness":
-            run_robustness_experiment(seeds=args.seeds)
+            run_robustness_experiment(seeds=args.seeds, csv_out=args.csv_out)
         else:
             interactive_cli_bootstrapper()
     else:
