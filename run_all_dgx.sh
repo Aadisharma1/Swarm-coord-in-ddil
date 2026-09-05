@@ -34,6 +34,10 @@ fi
 PYTHON="${PYTHON:-python3}"
 command -v "${PYTHON}" >/dev/null || { echo "[ERROR] python3 not found"; exit 1; }
 
+# User-local binaries (gh installed without sudo lives here); non-login shells
+# (nohup bash -c) do not source .bashrc, so extend PATH explicitly.
+export PATH="$HOME/.local/bin:$PATH"
+
 # --- 1. Virtualenv + dependencies --------------------------------------------
 if [ ! -d .venv ]; then
     echo "[SETUP] Creating virtualenv..."
