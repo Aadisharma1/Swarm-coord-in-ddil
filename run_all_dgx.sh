@@ -101,35 +101,53 @@ echo "[TESTS] Running unit tests..."
 python test_simulation_units.py || { echo "[ERROR] unit tests failed. Aborting."; exit 1; }
 
 # --- 4. Tier A: full CPU-mode statistical sweep (4 suites in parallel) --------
-echo "[TIER A] Starting CPU-mode 10-seed sweep (parallel suites)..."
-bash run_cpu_sweep.sh 10 100 || { echo "[ERROR] Tier A sweep failed — check logs_cpu_*/. Aborting."; exit 1; }
+BENCH_LINES=$(wc -l < results/benchmark_10seeds.csv 2>/dev/null || echo 0)
+if [ "${BENCH_LINES}" -ge 271 ]; then
+    echo "[TIER A] benchmark CSV already complete (${BENCH_LINES} lines) — skipping sweep."
+else
+    echo "[TIER A] Starting CPU-mode 10-seed sweep (parallel suites)..."
+    bash run_cpu_sweep.sh 10 100 || { echo "[ERROR] Tier A sweep failed — check logs_cpu_*/. Aborting."; push_results; exit 1; }
 
-echo "[TIER A] Verifying CSVs..."
-for f in results/benchmark_10seeds.csv results/ablation_10seeds.csv \
-         results/sensitivity_10seeds.csv results/robustness_10seeds.csv; do
-    [ -s "$f" ] || { echo "[ERROR] missing/empty $f"; exit 1; }
-    wc -l "$f"
-done
+    echo "[TIER A] Verifying CSVs..."
+    for f in results/benchmark_10seeds.csv results/ablation_10seeds.csv \
+             results/sensitivity_10seeds.csv results/robustness_10seeds.csv; do
+        [ -s "$f" ] || { echo "[ERROR] missing/empty $f"; exit 1; }
+        wc -l "$f"
+    done
+fi
+
+# Snapshot the (possibly partial) results to GitHub immediately — Tier A is the
+# primary dataset; never leave it hostage to Tier B's multi-hour runtime.
+push_results
 
 # --- 5. Tier B: live vLLM validation (8x A100) --------------------------------
 mkdir -p results_live logs
 
+LIVE_OK=0
+[ -s results_live/benchmark_live_validation.csv ] && [ -s results_live/robustness_live_validation.csv ] && LIVE_OK=1
+if [ "${LIVE_OK}" = "1" ]; then
+    echo "[TIER B] live validation CSVs already present — skipping."
+fi
+
 # vLLM is NOT in requirements.txt (only needed for live validation); install
 # into the venv if missing. Large wheel (~2 GB with CUDA deps) — a few minutes.
 SKIP_TIER_B=0
-python -c "import vllm" 2>/dev/null || {
-    echo "[TIER B] Installing vLLM (~5-10 min, large wheel)..."
-    pip install vllm -q || { echo "[WARN] vLLM install failed — skipping live validation."; SKIP_TIER_B=1; }
-}
+if [ "${LIVE_OK}" = "0" ]; then
+    python -c "import vllm" 2>/dev/null || {
+        echo "[TIER B] Installing vLLM (~5-10 min, large wheel)..."
+        pip install vllm -q || { echo "[WARN] vLLM install failed — skipping live validation."; SKIP_TIER_B=1; }
+    }
+fi
 
-if [ "${SKIP_TIER_B}" = "1" ]; then
-    echo "[TIER B] Skipped (vLLM unavailable)."
+if [ "${SKIP_TIER_B}" = "1" ] || [ "${LIVE_OK}" = "1" ]; then
+    echo "[TIER B] Skipped."
 elif bash launch_vllm_cluster.sh; then
     echo "[TIER B] Live benchmark validation (2 seeds x 3 drops)..."
     python empirical_ddil_simulation.py --mode benchmark \
         --seeds 42 43 --drop-rates 0.0 0.4 0.8 --nodes 50 --duration 100 \
         --csv-out results_live/benchmark_live_validation.csv \
         2>&1 | tee logs/live_benchmark.log || echo "[WARN] live benchmark failed (see logs) — continuing"
+    push_results
 
     echo "[TIER B] Live injection-robustness validation..."
     python empirical_ddil_simulation.py --mode robustness \
@@ -145,7 +163,7 @@ fi
 
 # --- 6. Rebuild manuscript from Tier A data -----------------------------------
 echo "[PAPER] Rebuilding manuscript from results CSVs..."
-python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; exit 1; }
+python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; push_results; exit 1; }
 
 # --- 7. Auto-push results, figures, manuscript, logs back to GitHub -----------
 # Runs via EXIT trap below: fires on success AND on any mid-run failure/crash,
@@ -162,9 +180,6 @@ __pycache__/
 GI
 
 push_results() {
-    [ "${PUSH_DONE:-0}" = "1" ] && return 0
-    PUSH_DONE=1
-
     echo "[GIT] Pushing results snapshot to GitHub..."
     git add results results_live 2>/dev/null || true
     git add -f utsa/pdrone_InCIS_2027_Submission.docx 2>/dev/null || true
@@ -191,8 +206,9 @@ push_results() {
     fi
 }
 
-# Fire on normal completion AND on any error exit (paper build failure, etc.)
+# Fire on normal completion, any error exit, AND on SIGTERM/SIGINT (pkill, Ctrl-C)
 trap push_results EXIT
+trap 'push_results; exit 143' TERM INT
 push_results
 
 # --- 8. Summary ---------------------------------------------------------------
