@@ -148,7 +148,8 @@ echo "[PAPER] Rebuilding manuscript from results CSVs..."
 python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; exit 1; }
 
 # --- 7. Auto-push results, figures, manuscript, logs back to GitHub -----------
-echo "[GIT] Pushing results back to GitHub..."
+# Runs via EXIT trap below: fires on success AND on any mid-run failure/crash,
+# so partial results + the master log always reach GitHub for phone debugging.
 
 # Keep machine-only dirs out of the results commit
 cat >> .gitignore <<'GI'
@@ -160,28 +161,39 @@ __pycache__/
 *.pyc
 GI
 
-git add results results_live 2>/dev/null || true
-git add -f utsa/pdrone_InCIS_2027_Submission.docx 2>/dev/null || true
-git add fig_sync_vs_drop.png fig_energy_vs_drop.png fig_ablation_sync.png 2>/dev/null || true
-git add logs_cpu_* logs results_live/*.log run_all_*.log live_*.log 2>/dev/null || true
+push_results() {
+    [ "${PUSH_DONE:-0}" = "1" ] && return 0
+    PUSH_DONE=1
 
-if git diff --cached --quiet 2>/dev/null; then
-    echo "[GIT] Nothing new to commit."
-else
-    git commit -q -m "DGX results ${STAMP}: Tier A CSVs + live validation + figures + manuscript" || true
-    echo "[GIT] Committed results snapshot ${STAMP}."
-fi
+    echo "[GIT] Pushing results snapshot to GitHub..."
+    git add results results_live 2>/dev/null || true
+    git add -f utsa/pdrone_InCIS_2027_Submission.docx 2>/dev/null || true
+    git add fig_sync_vs_drop.png fig_energy_vs_drop.png fig_ablation_sync.png 2>/dev/null || true
+    git add logs_cpu_* logs results_live/*.log run_all_*.log live_*.log 2>/dev/null || true
 
-if [ "${GIT_PUSH_OK}" = "1" ]; then
-    if git push "${PUSH_URL}" HEAD:main; then
-        echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
+    if git diff --cached --quiet 2>/dev/null; then
+        echo "[GIT] Nothing new to commit."
     else
-        echo "[GIT][WARN] End-of-run push failed. Results remain local in ~/Swarm-coord-in-ddil."
+        git commit -q -m "DGX results ${STAMP}: CSVs + figures + manuscript + logs (auto-push)" || true
+        echo "[GIT] Committed results snapshot ${STAMP}."
     fi
-else
-    echo "[GIT] Push auth was never verified — results remain local on the DGX."
-    echo "      Push later from ~/Swarm-coord-in-ddil with: git push origin main"
-fi
+
+    if [ "${GIT_PUSH_OK:-0}" = "1" ]; then
+        if git push "${PUSH_URL}" HEAD:main; then
+            echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
+        else
+            echo "[GIT][WARN] Push failed. Results remain local in ~/Swarm-coord-in-ddil."
+            echo "             Retry later: cd ~/Swarm-coord-in-ddil && git push origin main"
+        fi
+    else
+        echo "[GIT] Push auth was never verified — results remain local on the DGX."
+        echo "      Push later from ~/Swarm-coord-in-ddil with: git push origin main"
+    fi
+}
+
+# Fire on normal completion AND on any error exit (paper build failure, etc.)
+trap push_results EXIT
+push_results
 
 # --- 8. Summary ---------------------------------------------------------------
 echo ""
