@@ -1366,6 +1366,7 @@ def export_latex_booktabs_table(
     e_sync, e_del, e_bytes, e_energy, e_dpr = (epidemic_final[k] for k in ("sync", "delivery", "bytes", "energy", "dpr"))
     a_sync, a_del, a_bytes, a_energy, a_dpr = (agentic_final[k] for k in ("sync", "delivery", "bytes", "energy", "dpr"))
 
+    pct = chr(92) + '%'  # literal backslash-percent; py<=3.11 forbids backslashes in f-string expressions: py<=3.11 forbids backslashes inside f-string expressions
     latex_table = f"""
 % ============================================================================
 % Table 1: IEEE/Springer Booktabs Table (Severe {drop_rate_pct:.0f}% Drop-Rate Metrics)
@@ -1378,9 +1379,9 @@ def export_latex_booktabs_table(
 \\toprule
 \\textbf{{Protocol Paradigm}} & \\textbf{{DPR (\\%)}} & \\textbf{{Delivery Rate (\\%)}} & \\textbf{{State Sync (\\%)}} & \\textbf{{Bandwidth (KB)}} & \\textbf{{Energy (kJ)}} \\\\
 \\midrule
-Gossip Protocol (Baseline 1)   & {cell(g_dpr[0], g_dpr[1], 100, '\\%')} & {cell(g_del[0], g_del[1], 100, '\\%')} & {cell(g_sync[0], g_sync[1], 100, '\\%')} & {cell(g_bytes[0], g_bytes[1], 1/1024, ' KB')} & {cell(g_energy[0], g_energy[1], 1/1000, ' kJ', 2)} \\\\
-Epidemic Routing (Baseline 2)  & {cell(e_dpr[0], e_dpr[1], 100, '\\%')} & {cell(e_del[0], e_del[1], 100, '\\%')} & {cell(e_sync[0], e_sync[1], 100, '\\%')} & {cell(e_bytes[0], e_bytes[1], 1/1024, ' KB')} & {cell(e_energy[0], e_energy[1], 1/1000, ' kJ', 2)} \\\\
-\\textbf{{Agentic SLM (Proposed)}} & \\textbf{{{cell(a_dpr[0], a_dpr[1], 100, '\\%')}}} & \\textbf{{{cell(a_del[0], a_del[1], 100, '\\%')}}} & \\textbf{{{cell(a_sync[0], a_sync[1], 100, '\\%')}}} & \\textbf{{{cell(a_bytes[0], a_bytes[1], 1/1024, ' KB')}}} & \\textbf{{{cell(a_energy[0], a_energy[1], 1/1000, ' kJ', 2)}}} \\\\
+Gossip Protocol (Baseline 1)   & {cell(g_dpr[0], g_dpr[1], 100, pct)} & {cell(g_del[0], g_del[1], 100, pct)} & {cell(g_sync[0], g_sync[1], 100, pct)} & {cell(g_bytes[0], g_bytes[1], 1/1024, ' KB')} & {cell(g_energy[0], g_energy[1], 1/1000, ' kJ', 2)} \\\\
+Epidemic Routing (Baseline 2)  & {cell(e_dpr[0], e_dpr[1], 100, pct)} & {cell(e_del[0], e_del[1], 100, pct)} & {cell(e_sync[0], e_sync[1], 100, pct)} & {cell(e_bytes[0], e_bytes[1], 1/1024, ' KB')} & {cell(e_energy[0], e_energy[1], 1/1000, ' kJ', 2)} \\\\
+\\textbf{{Agentic SLM (Proposed)}} & \\textbf{{{cell(a_dpr[0], a_dpr[1], 100, pct)}}} & \\textbf{{{cell(a_del[0], a_del[1], 100, pct)}}} & \\textbf{{{cell(a_sync[0], a_sync[1], 100, pct)}}} & \\textbf{{{cell(a_bytes[0], a_bytes[1], 1/1024, ' KB')}}} & \\textbf{{{cell(a_energy[0], a_energy[1], 1/1000, ' kJ', 2)}}} \\\\
 \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
@@ -1398,6 +1399,7 @@ def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[floa
         return base
 
     rows = []
+    pct = chr(92) + '%'  # literal backslash-percent (py<=3.11 f-string rule)
     for label, metrics in ablation_results.items():
         dpr = metrics["dpr"]
         syn = metrics["sync"]
@@ -1407,7 +1409,7 @@ def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[floa
         is_bold = (label == "Full Agentic SLM")
         b = "\\textbf{" if is_bold else ""
         eb = "}" if is_bold else ""
-        row = f"{b}{label}{eb} & {b}{cell(dpr[0], dpr[1], 100, '\\%')}{eb} & {b}{cell(dvr[0], dvr[1], 100, '\\%')}{eb} & {b}{cell(syn[0], syn[1], 100, '\\%')}{eb} & {b}{cell(byt[0], byt[1], 1/1024, ' KB')}{eb} & {b}{cell(eng[0], eng[1], 1/1000, ' kJ', 2)}{eb} \\\\"
+        row = f"{b}{label}{eb} & {b}{cell(dpr[0], dpr[1], 100, pct)}{eb} & {b}{cell(dvr[0], dvr[1], 100, pct)}{eb} & {b}{cell(syn[0], syn[1], 100, pct)}{eb} & {b}{cell(byt[0], byt[1], 1/1024, ' KB')}{eb} & {b}{cell(eng[0], eng[1], 1/1000, ' kJ', 2)}{eb} \\\\"
         rows.append(row)
 
     table_rows = "\n".join(rows)
