@@ -1437,27 +1437,77 @@ def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[floa
 # Main Comparative Benchmark & Output Generators
 # ============================================================================
 
+def render_ablation_plot(csv_rows: List[dict], drop_rates: List[float]) -> None:
+    """Renders fig_ablation_sync.png (sync % vs drop rate per architectural variant,
+    mean +/- 95% CI bands) from per-run CSV rows. Reusable by the CLI suite and
+    the finalize-from-CSV recovery path."""
+    drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
+
+    def series(variant: str, field: str):
+        means, cis = [], []
+        for dr in drop_rates:
+            vals = [r[field] for r in csv_rows
+                    if r.get("variant") == variant and abs(r["drop_rate"] - dr) < 1e-9]
+            means.append(statistics.mean(vals))
+            cis.append(ci95_halfwidth(vals))
+        return means, cis
+
+    styles = {
+        "Full Agentic SLM":         {"color": "#0077b6", "marker": "o", "ls": "-", "lw": 2.8},
+        "A1: No Link Memory":       {"color": "#d62828", "marker": "s", "ls": "--", "lw": 2.2},
+        "A2: No Compression":       {"color": "#e76f51", "marker": "x", "ls": "-.", "lw": 2.2},
+        "A3: No Relay Routing":     {"color": "#f77f00", "marker": "^", "ls": ":", "lw": 2.2},
+        "A4: No Verification Gate": {"color": "#2a9d8f", "marker": "D", "ls": "-.", "lw": 2.0},
+    }
+
+    fig3, ax3 = plt.subplots(figsize=(10, 6), dpi=200)
+    variants = [v for v in styles if any(r.get("variant") == v for r in csv_rows)]
+    for v in variants:
+        st = styles[v]
+        means, cis = series(v, "sync_pct")
+        ax3.plot(drop_percentages, means, color=st["color"], marker=st["marker"],
+                 ls=st["ls"], lw=st["lw"], ms=7, label=v)
+        ax3.fill_between(drop_percentages,
+                         [m - c for m, c in zip(means, cis)],
+                         [m + c for m, c in zip(means, cis)],
+                         alpha=0.12, color=st["color"])
+
+    ax3.set_title('Ablation Study: State Synchronization % vs. Drop Rate\n'
+                  'Component Contributions (Compression, EMA Memory, Relay, IPS Verification)',
+                  fontsize=12, fontweight='bold', pad=15)
+    ax3.set_xlabel('Environmental Packet Drop Rate (%)', fontsize=11)
+    ax3.set_ylabel('Effective State Synchronization (%)', fontsize=11)
+    ax3.set_xlim(-2, 82); ax3.set_ylim(0, 105)
+    ax3.grid(True, linestyle=':', alpha=0.5, color='#dee2e6')
+    ax3.legend(loc='lower left', fontsize=9, framealpha=0.95, fancybox=True, shadow=True)
+    fig3.tight_layout()
+    fig3.savefig(PLOT_ABLATION_PATH)
+    plt.close(fig3)
+    print(f"[OUTPUT] Ablation Plot saved to: {PLOT_ABLATION_PATH}")
+
+
 def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: List[float]) -> None:
     """Renders fig_sync_vs_drop.png and fig_energy_vs_drop.png from per-run CSV rows
     (mean +/- 95% CI bands). Reusable by both the CLI suite and the parallel driver."""
     drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
     multi_seed = len(seeds) > 1
 
-    def agg(mode: str, dr: float, field: str, scale: float) -> Tuple[float, float]:
-        vals = [r[field] / scale for r in csv_rows
+    def agg(mode: str, dr: float, field: str) -> Tuple[float, float]:
+        vals = [r[field] for r in csv_rows
                 if r["mode"] == mode and abs(r["drop_rate"] - dr) < 1e-9]
         return statistics.mean(vals), ci95_halfwidth(vals)
 
-    def series(mode: str, field: str, scale: float) -> Tuple[List[float], List[float]]:
-        pairs = [agg(mode, dr, field, scale) for dr in drop_rates]
+    def series(mode: str, field: str) -> Tuple[List[float], List[float]]:
+        pairs = [agg(mode, dr, field) for dr in drop_rates]
         return [p[0] for p in pairs], [p[1] for p in pairs]
 
-    gossip_syncs, gossip_syncs_sd = series("gossip", "sync_pct", 100)
-    epidemic_syncs, epidemic_syncs_sd = series("epidemic", "sync_pct", 100)
-    agentic_syncs, agentic_syncs_sd = series("agentic", "sync_pct", 100)
-    gossip_energies, gossip_energies_sd = series("gossip", "energy_kj", 1 / 1000)
-    epidemic_energies, epidemic_energies_sd = series("epidemic", "energy_kj", 1 / 1000)
-    agentic_energies, agentic_energies_sd = series("agentic", "energy_kj", 1 / 1000)
+    # CSV fields are already in plot units (sync/delivery in %, energy in kJ)
+    gossip_syncs, gossip_syncs_sd = series("gossip", "sync_pct")
+    epidemic_syncs, epidemic_syncs_sd = series("epidemic", "sync_pct")
+    agentic_syncs, agentic_syncs_sd = series("agentic", "sync_pct")
+    gossip_energies, gossip_energies_sd = series("gossip", "energy_kj")
+    epidemic_energies, epidemic_energies_sd = series("epidemic", "energy_kj")
+    agentic_energies, agentic_energies_sd = series("agentic", "energy_kj")
 
     # Plot 1: fig_sync_vs_drop.png
     fig1, ax1 = plt.subplots(figsize=(10, 6), dpi=200)
