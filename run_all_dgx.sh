@@ -55,6 +55,43 @@ info = whoami()
 print(f"[HF] authenticated as: {info.get('name')}")
 PY
 
+# --- 2b. Git push auth probe (proves end-of-run auto-push works NOW, not in 5h)
+git config user.email "aadisharma2808@gmail.com" 2>/dev/null || true
+git config user.name "Aadi Sharma (DGX)" 2>/dev/null || true
+
+GIT_PUSH_OK=0
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "[GIT] gh is logged in on this machine. Wiring gh credentials for git push..."
+    gh auth setup-git >/dev/null 2>&1 || true
+    GIT_PUSH_OK=1
+elif [ -n "${GIT_PUSH_TOKEN:-}" ]; then
+    echo "[GIT] Using GIT_PUSH_TOKEN (fine-grained PAT with Contents: Read and write)."
+    GIT_PUSH_OK=1
+else
+    echo "[GIT][WARN] Neither 'gh' login nor GIT_PUSH_TOKEN available on this machine."
+    echo "             The run will proceed, but results will stay LOCAL on the DGX"
+    echo "             (~/Swarm-coord-in-ddil/results). W&B still gets all metrics."
+    echo "             To enable auto-push later: git push origin main  (with gh auth login"
+    echo "             or a token: git push https://x-access-token:<PAT>@github.com/Aadisharma1/Swarm-coord-in-ddil.git HEAD:main)"
+fi
+
+if [ "${GIT_PUSH_OK}" = "1" ]; then
+    if [ -n "${GIT_PUSH_TOKEN:-}" ]; then
+        PUSH_URL="https://x-access-token:${GIT_PUSH_TOKEN}@github.com/Aadisharma1/Swarm-coord-in-ddil.git"
+    else
+        PUSH_URL="origin"
+    fi
+    git commit -q --allow-empty -m "DGX run started ${STAMP} (auth probe)" 2>/dev/null || true
+    if git push "${PUSH_URL}" HEAD:main >/dev/null 2>&1; then
+        echo "[GIT] Push auth VERIFIED — end-of-run results will land on GitHub main."
+    else
+        GIT_PUSH_OK=0
+        echo "[GIT][WARN] Push test FAILED (token missing Contents:write, or repo rules)."
+        echo "            Run continues; results stay local + W&B. Fix push auth and"
+        echo "            afterwards run: git push origin main"
+    fi
+fi
+
 # --- 3. Unit tests (fast gate) ------------------------------------------------
 echo "[TESTS] Running unit tests..."
 python test_simulation_units.py || { echo "[ERROR] unit tests failed. Aborting."; exit 1; }
@@ -108,8 +145,6 @@ python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; e
 
 # --- 7. Auto-push results, figures, manuscript, logs back to GitHub -----------
 echo "[GIT] Pushing results back to GitHub..."
-git config user.email "aadisharma2808@gmail.com" 2>/dev/null || true
-git config user.name "Aadi Sharma (DGX)" 2>/dev/null || true
 
 # Keep machine-only dirs out of the results commit
 cat >> .gitignore <<'GI'
@@ -133,19 +168,16 @@ else
     echo "[GIT] Committed results snapshot ${STAMP}."
 fi
 
-PUSHED=0
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    echo "[GIT] Using existing gh login for push..."
-    gh auth setup-git >/dev/null 2>&1 || true
-    git push origin main && PUSHED=1
-elif [ -n "${GIT_PUSH_TOKEN:-}" ]; then
-    echo "[GIT] Using GIT_PUSH_TOKEN for push..."
-    git push "https://x-access-token:${GIT_PUSH_TOKEN}@github.com/Aadisharma1/Swarm-coord-in-ddil.git" HEAD:main && PUSHED=1
+if [ "${GIT_PUSH_OK}" = "1" ]; then
+    if git push "${PUSH_URL}" HEAD:main; then
+        echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
+    else
+        echo "[GIT][WARN] End-of-run push failed. Results remain local in ~/Swarm-coord-in-ddil."
+    fi
 else
-    echo "[GIT] No gh login and no GIT_PUSH_TOKEN — results remain local on the DGX"
-    echo "      (~/Swarm-coord-in-ddil). Push later with: git push origin main"
+    echo "[GIT] Push auth was never verified — results remain local on the DGX."
+    echo "      Push later from ~/Swarm-coord-in-ddil with: git push origin main"
 fi
-[ "${PUSHED}" = "1" ] && echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
 
 # --- 8. Summary ---------------------------------------------------------------
 echo ""
