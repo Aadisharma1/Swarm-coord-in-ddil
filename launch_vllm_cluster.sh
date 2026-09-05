@@ -28,17 +28,35 @@ if [ -z "${HF_TOKEN:-}" ] && [ ! -f "$HOME/.cache/huggingface/token" ]; then
 fi
 
 PIDS=()
+# `vllm serve` is the modern CLI; the python -m module path is the legacy
+# interface. Use whichever this vLLM install provides.
+if python3 -c "import vllm" 2>/dev/null && command -v vllm >/dev/null 2>&1; then
+    LAUNCH_MODE="cli"
+else
+    LAUNCH_MODE="module"
+fi
+echo "[CLUSTER] vLLM launch mode: ${LAUNCH_MODE}"
+
 for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
     PORT=$((BASE_PORT + GPU_ID))
     LOG_FILE="vllm_node_gpu_${GPU_ID}.log"
     echo "[CLUSTER] GPU ${GPU_ID} -> http://localhost:${PORT}/v1 (log: ${LOG_FILE})"
-    CUDA_VISIBLE_DEVICES=${GPU_ID} python3 -m vllm.entrypoints.openai.api_server \
-        --model "${MODEL_NAME}" \
-        --port "${PORT}" \
-        --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-        --max-model-len "${MAX_MODEL_LEN}" \
-        --trust-remote-code \
-        > "${LOG_FILE}" 2>&1 &
+    if [ "${LAUNCH_MODE}" = "cli" ]; then
+        CUDA_VISIBLE_DEVICES=${GPU_ID} vllm serve "${MODEL_NAME}" \
+            --port "${PORT}" \
+            --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${MAX_MODEL_LEN}" \
+            --trust-remote-code \
+            > "${LOG_FILE}" 2>&1 &
+    else
+        CUDA_VISIBLE_DEVICES=${GPU_ID} python3 -m vllm.entrypoints.openai.api_server \
+            --model "${MODEL_NAME}" \
+            --port "${PORT}" \
+            --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
+            --max-model-len "${MAX_MODEL_LEN}" \
+            --trust-remote-code \
+            > "${LOG_FILE}" 2>&1 &
+    fi
     PIDS+=($!)
 done
 

@@ -305,12 +305,21 @@ def add_bullet(text):
 # ----------------------------------------------------------------------------
 # Native OMML equation support (LaTeX -> MathML -> OMML), PNG fallback
 # ----------------------------------------------------------------------------
+# Probe imports AND the convert() API: mathml2omml's API/availability varies by
+# python version (0.0.x on py<=3.11 vs 0.1.x on py>=3.12). If anything is off,
+# all equations render as high-DPI PNG instead — build never fails on this.
 try:
     import latex2mathml.converter as _l2m
     import mathml2omml as _m2o
+    _probe = str(_m2o.convert(_l2m.convert(r'x^2')))
+    if not _probe.startswith('<m:oMath'):
+        raise ValueError(f'unexpected OMML root: {_probe[:40]}')
     _OMML_OK = True
-except Exception:
+except Exception as _e:
+    _l2m = _m2o = None
     _OMML_OK = False
+    print(f"[WARN] native-equation pipeline unavailable ({type(_e).__name__}: {_e}); "
+          "equations will render as PNG images.")
 
 _M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 _EQ_COUNTER = {'n': 0}

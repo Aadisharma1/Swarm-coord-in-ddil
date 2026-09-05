@@ -1194,7 +1194,7 @@ def init_wandb(suite: str, extra_config: Optional[dict] = None):
         _WANDB_RUN = wandb.init(
             project=os.environ.get("WANDB_PROJECT", "incis2027-ddil"),
             name=f"{suite}-N{NUM_NODES}-t{int(SIM_DURATION)}",
-            config=config, job_type=suite, reinit="finish_previous",
+            config=config, job_type=suite,
         )
         print(f"[WANDB] Logging '{suite}' -> project '{os.environ.get('WANDB_PROJECT', 'incis2027-ddil')}'")
         return _WANDB_RUN

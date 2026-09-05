@@ -43,7 +43,7 @@ fi
 source .venv/bin/activate
 echo "[SETUP] Installing dependencies..."
 pip install --upgrade pip -q
-pip install -r requirements.txt -q
+pip install -r requirements.txt -q || { echo "[SETUP] retrying dependency install..."; pip install -r requirements.txt; }
 pip install wandb -q
 pip install "huggingface_hub" -q
 
@@ -71,9 +71,19 @@ for f in results/benchmark_10seeds.csv results/ablation_10seeds.csv \
 done
 
 # --- 5. Tier B: live vLLM validation (8x A100) --------------------------------
-echo "[TIER B] Launching 8x vLLM cluster for live validation..."
 mkdir -p results_live logs
-if bash launch_vllm_cluster.sh; then
+
+# vLLM is NOT in requirements.txt (only needed for live validation); install
+# into the venv if missing. Large wheel (~2 GB with CUDA deps) — a few minutes.
+SKIP_TIER_B=0
+python -c "import vllm" 2>/dev/null || {
+    echo "[TIER B] Installing vLLM (~5-10 min, large wheel)..."
+    pip install vllm -q || { echo "[WARN] vLLM install failed — skipping live validation."; SKIP_TIER_B=1; }
+}
+
+if [ "${SKIP_TIER_B}" = "1" ]; then
+    echo "[TIER B] Skipped (vLLM unavailable)."
+elif bash launch_vllm_cluster.sh; then
     echo "[TIER B] Live benchmark validation (2 seeds x 3 drops)..."
     python empirical_ddil_simulation.py --mode benchmark \
         --seeds 42 43 --drop-rates 0.0 0.4 0.8 --nodes 50 --duration 100 \
@@ -96,7 +106,48 @@ fi
 echo "[PAPER] Rebuilding manuscript from results CSVs..."
 python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; exit 1; }
 
-# --- 7. Summary ---------------------------------------------------------------
+# --- 7. Auto-push results, figures, manuscript, logs back to GitHub -----------
+echo "[GIT] Pushing results back to GitHub..."
+git config user.email "aadisharma2808@gmail.com" 2>/dev/null || true
+git config user.name "Aadi Sharma (DGX)" 2>/dev/null || true
+
+# Keep machine-only dirs out of the results commit
+cat >> .gitignore <<'GI'
+
+# DGX run artifacts (never commit)
+.venv/
+wandb/
+__pycache__/
+*.pyc
+GI
+
+git add results results_live 2>/dev/null || true
+git add -f utsa/pdrone_InCIS_2027_Submission.docx 2>/dev/null || true
+git add fig_sync_vs_drop.png fig_energy_vs_drop.png fig_ablation_sync.png 2>/dev/null || true
+git add logs_cpu_* logs results_live/*.log run_all_*.log live_*.log 2>/dev/null || true
+
+if git diff --cached --quiet 2>/dev/null; then
+    echo "[GIT] Nothing new to commit."
+else
+    git commit -q -m "DGX results ${STAMP}: Tier A CSVs + live validation + figures + manuscript" || true
+    echo "[GIT] Committed results snapshot ${STAMP}."
+fi
+
+PUSHED=0
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo "[GIT] Using existing gh login for push..."
+    gh auth setup-git >/dev/null 2>&1 || true
+    git push origin main && PUSHED=1
+elif [ -n "${GIT_PUSH_TOKEN:-}" ]; then
+    echo "[GIT] Using GIT_PUSH_TOKEN for push..."
+    git push "https://x-access-token:${GIT_PUSH_TOKEN}@github.com/Aadisharma1/Swarm-coord-in-ddil.git" HEAD:main && PUSHED=1
+else
+    echo "[GIT] No gh login and no GIT_PUSH_TOKEN — results remain local on the DGX"
+    echo "      (~/Swarm-coord-in-ddil). Push later with: git push origin main"
+fi
+[ "${PUSHED}" = "1" ] && echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
+
+# --- 8. Summary ---------------------------------------------------------------
 echo ""
 echo "=================================================================="
 echo " ALL DONE — $(date)"
