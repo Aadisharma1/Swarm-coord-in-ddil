@@ -194,15 +194,24 @@ push_results() {
     fi
 
     if [ "${GIT_PUSH_OK:-0}" = "1" ]; then
-        if git push "${PUSH_URL}" HEAD:main; then
+        # Remote may have moved (laptop commits, other runs): rebase before push,
+        # retry once. Results paths and code paths are disjoint, so rebase is clean.
+        git pull --rebase >/dev/null 2>&1 || true
+        if git push "${PUSH_URL}" HEAD:main 2>/dev/null; then
             echo "[GIT] Results, figures, manuscript, and logs are on GitHub main."
         else
-            echo "[GIT][WARN] Push failed. Results remain local in ~/Swarm-coord-in-ddil."
-            echo "             Retry later: cd ~/Swarm-coord-in-ddil && git push origin main"
+            echo "[GIT] Push rejected — rebasing on latest main and retrying..."
+            git pull --rebase >/dev/null 2>&1 || true
+            if git push "${PUSH_URL}" HEAD:main; then
+                echo "[GIT] Results, figures, manuscript, and logs are on GitHub main (after rebase)."
+            else
+                echo "[GIT][WARN] Push failed. Results remain local in ~/Swarm-coord-in-ddil."
+                echo "             Retry later: cd ~/Swarm-coord-in-ddil && git pull --rebase origin main && git push origin main"
+            fi
         fi
     else
         echo "[GIT] Push auth was never verified — results remain local on the DGX."
-        echo "      Push later from ~/Swarm-coord-in-ddil with: git push origin main"
+        echo "      Push later from ~/Swarm-coord-in-ddil with: git pull --rebase origin main && git push origin main"
     fi
 }
 
