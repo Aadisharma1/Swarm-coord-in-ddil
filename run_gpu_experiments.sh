@@ -5,7 +5,7 @@
 # One-shot script: verifies HF access, launches 8x vLLM endpoints, waits for
 # readiness, warms up inference, then runs the benchmark, ablation, sensitivity,
 # and robustness suites with 10 seeds. All suites write per-run CSVs; the
-# manuscript generator (migrate_to_incis_final.py) reads those CSVs directly.
+# CSVs are the canonical artifact; the paper DOCX is built locally by the author (not in this repo).
 #
 # Usage:  bash run_gpu_experiments.sh [NUM_SEEDS] [DURATION]
 #   e.g.  bash run_gpu_experiments.sh 10 100
@@ -220,6 +220,6 @@ echo "    - benchmark_${NUM_SEEDS}seeds.csv     (Tables 2-3 + Figs 1-2)"
 echo "    - ablation_${NUM_SEEDS}seeds.csv     (Table 4 + Fig 3)"
 echo "    - sensitivity_${NUM_SEEDS}seeds.csv  (Table 5)"
 echo "    - robustness_${NUM_SEEDS}seeds.csv   (Table 6)"
-echo "  Next: copy the 4 CSVs + 3 PNGs next to migrate_to_incis_final.py and run"
-echo "        'python migrate_to_incis_final.py' to regenerate the manuscript."
+echo "  Next: CSVs in results/ are the canonical artifact. Copy them to paper_artifacts/ for archival."
+echo "        (The paper DOCX itself is built locally by the author; not part of this repo.)"
 echo "=============================================================="

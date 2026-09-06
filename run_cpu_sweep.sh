@@ -60,4 +60,4 @@ wait ${P1} ${P2} ${P3} ${P4}
 
 echo "[TIER A] All suites done: $(date)"
 ls -la results/
-echo "[TIER A] Next: python3 migrate_to_incis_final.py   (rebuilds manuscript from these CSVs)"
+echo "[TIER A] Next: CSVs in results/. Paper is built locally by the author (not in this repo); copy results/*.csv to paper_artifacts/ for archival."
