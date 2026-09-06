@@ -64,12 +64,12 @@ git config user.email "aadisharma2808@gmail.com" 2>/dev/null || true
 git config user.name "Aadi Sharma (DGX)" 2>/dev/null || true
 
 GIT_PUSH_OK=0
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+if [ -n "${GIT_PUSH_TOKEN:-}" ]; then
+    echo "[GIT] Using GIT_PUSH_TOKEN (fine-grained PAT with Contents: Read and write)."
+    GIT_PUSH_OK=1
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     echo "[GIT] gh is logged in on this machine. Wiring gh credentials for git push..."
     gh auth setup-git >/dev/null 2>&1 || true
-    GIT_PUSH_OK=1
-elif [ -n "${GIT_PUSH_TOKEN:-}" ]; then
-    echo "[GIT] Using GIT_PUSH_TOKEN (fine-grained PAT with Contents: Read and write)."
     GIT_PUSH_OK=1
 else
     echo "[GIT][WARN] Neither 'gh' login nor GIT_PUSH_TOKEN available on this machine."
@@ -131,7 +131,7 @@ fi
 
 # vLLM is NOT in requirements.txt (only needed for live validation); install
 # into the venv if missing. Large wheel (~2 GB with CUDA deps) — a few minutes.
-SKIP_TIER_B=0
+SKIP_TIER_B="${SKIP_TIER_B:-0}"
 if [ "${LIVE_OK}" = "0" ]; then
     python -c "import vllm" 2>/dev/null || {
         echo "[TIER B] Installing vLLM (~5-10 min, large wheel)..."
@@ -161,9 +161,10 @@ else
     echo "[WARN] vLLM cluster failed to start — skipping live validation (Tier A results still valid)."
 fi
 
-# --- 6. Rebuild manuscript from Tier A data -----------------------------------
-echo "[PAPER] Rebuilding manuscript from results CSVs..."
-python migrate_to_incis_final.py || { echo "[ERROR] manuscript build failed."; push_results; exit 1; }
+# --- 6. Manuscript build: REMOVED from the automated run ----------------------
+# The DOCX is generated separately (python migrate_to_incis_final.py) once the
+# operator is ready — it needs human judgment on the numbers. Results + figures
+# land on GitHub via the push below; the paper is built from those CSVs later.
 
 # --- 7. Auto-push results, figures, manuscript, logs back to GitHub -----------
 # Runs via EXIT trap below: fires on success AND on any mid-run failure/crash,

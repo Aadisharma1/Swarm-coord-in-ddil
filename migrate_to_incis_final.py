@@ -1228,5 +1228,5 @@ os.makedirs(os.path.dirname(output_docx_path), exist_ok=True)
 doc.save(output_docx_path)
 print(f"[SUCCESS] Data-driven InCIS 2027 manuscript generated at:\n  -> {output_docx_path}")
 print(f"  Payload facts: raw ~{RAW_MEAN:.0f} B ({RAW_MIN}-{RAW_MAX}), token ~{TOK_MEAN:.0f} B ({TOK_MIN}-{TOK_MAX}), ratio {COMPRESSION_RATIO:.2f}x")
-print(f"  Headlines @80%: DPR {_F(a_dpr_80, ".1f")}% | sync {_F(a_sync_80, ".1f")}% (gossip {_F(g_sync_80, ".1f")}%) | "
-      f"bandwidth {_F(BW_RATIO, ".1f")}x | energy {_F(EN_RATIO, ".1f")}x | seeds {N_SEEDS}")
+print(f"  Headlines @80%: DPR {_F(a_dpr_80, '.1f')}% | sync {_F(a_sync_80, '.1f')}% (gossip {_F(g_sync_80, '.1f')}%) | "
+      f"bandwidth {_F(BW_RATIO, '.1f')}x | energy {_F(EN_RATIO, '.1f')}x | seeds {N_SEEDS}")
