@@ -34,4 +34,50 @@
 (EngineCore pid=184733) INFO 09-06 14:22:38 [gpu_worker.py:578] Available KV cache memory: 20.12 GiB
 (EngineCore pid=184733) INFO 09-06 14:22:38 [kv_cache_utils.py:1869] GPU KV cache size: 164,784 tokens, Maximum concurrency for 2,048 tokens per request: 80.46x
 (EngineCore pid=184733) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   4%|▍         | 2/51 [00:00<00:04, 10.90it/s]Capturing CUDA graphs (PIECEWISE):   8%|▊         | 4/51 [00:00<00:04, 11.37it/s]Capturing CUDA graphs (PIECEWISE):  12%|█▏        | 6/51 [00:00<00:03, 11.37it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 8/51 [00:00<00:03, 11.53it/s]Capturing CUDA graphs (PIECEWISE):  20%|█▉        | 10/51 [00:00<00:03, 11.98it/s]Capturing CUDA graphs (PIECEWISE):  24%|██▎       | 12/51 [00:01<00:03, 12.30it/s]Capturing CUDA graphs (PIECEWISE):  27%|██▋       | 14/51 [00:01<00:02, 12.51it/s]Capturing CUDA graphs (PIECEWISE):  31%|███▏      | 16/51 [00:01<00:02, 12.66it/s]Capturing CUDA graphs (PIECEWISE):  35%|███▌      | 18/51 [00:01<00:02, 13.27it/s]Capturing CUDA graphs (PIECEWISE):  39%|███▉      | 20/51 [00:01<00:02, 13.94it/s]Capturing CUDA graphs (PIECEWISE):  43%|████▎     | 22/51 [00:01<00:02, 14.22it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 24/51 [00:01<00:02, 11.60it/s]Capturing CUDA graphs (PIECEWISE):  51%|█████     | 26/51 [00:02<00:01, 12.67it/s]Capturing CUDA graphs (PIECEWISE):  55%|█████▍    | 28/51 [00:02<00:01, 13.49it/s]Capturing CUDA graphs (PIECEWISE):  59%|█████▉    | 30/51 [00:02<00:01, 13.80it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 32/51 [00:02<00:01, 14.49it/s]Capturing CUDA graphs (PIECEWISE):  67%|██████▋   | 34/51 [00:02<00:01, 14.61it/s]Capturing CUDA graphs (PIECEWISE):  71%|███████   | 36/51 [00:02<00:00, 15.03it/s]Capturing CUDA graphs (PIECEWISE):  75%|███████▍  | 38/51 [00:02<00:00, 15.53it/s]Capturing CUDA graphs (PIECEWISE):  78%|███████▊  | 40/51 [00:02<00:00, 15.94it/s]Capturing CUDA graphs (PIECEWISE):  82%|████████▏ | 42/51 [00:03<00:00, 16.22it/s]Capturing CUDA graphs (PIECEWISE):  86%|████████▋ | 44/51 [00:03<00:00, 16.65it/s]Capturing CUDA graphs (PIECEWISE):  90%|█████████ | 46/51 [00:03<00:00, 17.06it/s]Capturing CUDA graphs (PIECEWISE):  94%|█████████▍| 48/51 [00:03<00:00, 16.91it/s]Capturing CUDA graphs (PIECEWISE):  98%|█████████▊| 50/51 [00:03<00:00, 17.29it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 51/51 [00:03<00:00, 14.20it/s]
-(EngineCore pid=184733) Capturing CUDA graphs (FULL):   0%|          | 0/35 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):   9%|▊         | 3/35 [00:00<00:01, 22.99it/s]Capturing CUDA graphs (FULL):  17%|█▋        | 6/35 [00:00<00:01, 22.16it/s]Capturing CUDA graphs (FULL):  26%|██▌       | 9/35 [00:00<00:01, 22.30it/s]Capturing CUDA graphs (FULL):  34%|███▍      | 12/35 [00:00<00:00, 23.63it/s]Capturing CUDA graphs (FULL):  43%|████▎     | 15/35 [00:00<00:00, 24.55it/s]Capturing CUDA graphs (FULL):  51%|█████▏    | 18/35 [00:00<00:00, 25.19it/s]Capturing CUDA graphs (FULL):  60%|██████    | 21/35 [00:00<00:00, 25.67it/s]
+(EngineCore pid=184733) Capturing CUDA graphs (FULL):   0%|          | 0/35 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):   9%|▊         | 3/35 [00:00<00:01, 22.99it/s]Capturing CUDA graphs (FULL):  17%|█▋        | 6/35 [00:00<00:01, 22.16it/s]Capturing CUDA graphs (FULL):  26%|██▌       | 9/35 [00:00<00:01, 22.30it/s]Capturing CUDA graphs (FULL):  34%|███▍      | 12/35 [00:00<00:00, 23.63it/s]Capturing CUDA graphs (FULL):  43%|████▎     | 15/35 [00:00<00:00, 24.55it/s]Capturing CUDA graphs (FULL):  51%|█████▏    | 18/35 [00:00<00:00, 25.19it/s]Capturing CUDA graphs (FULL):  60%|██████    | 21/35 [00:00<00:00, 25.67it/s]Capturing CUDA graphs (FULL):  69%|██████▊   | 24/35 [00:00<00:00, 26.35it/s]Capturing CUDA graphs (FULL):  77%|███████▋  | 27/35 [00:01<00:00, 27.22it/s]Capturing CUDA graphs (FULL):  89%|████████▊ | 31/35 [00:01<00:00, 27.97it/s]Capturing CUDA graphs (FULL): 100%|██████████| 35/35 [00:01<00:00, 29.27it/s]Capturing CUDA graphs (FULL): 100%|██████████| 35/35 [00:01<00:00, 26.35it/s]
+(EngineCore pid=184733) INFO 09-06 14:22:44 [model_runner.py:906] Graph capturing finished in 5 secs, took 0.56 GiB
+(EngineCore pid=184733) INFO 09-06 14:22:44 [gpu_worker.py:804] Free memory on device (39.08/39.49 GiB) on startup. Desired GPU memory utilization is (0.9, 35.54 GiB). Actual usage is 15.22 GiB for consumed memory (weights + non-torch), 0.21 GiB for peak activation, and 0.56 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=20837650535` (19.41 GiB) to fit into requested memory, or `--kv-cache-memory=24632683008` (22.94 GiB) to fully utilize gpu memory. Current kv cache memory in use is 20.12 GiB.
+(EngineCore pid=184733) INFO 09-06 14:22:45 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+(EngineCore pid=184733) INFO 09-06 14:22:45 [torch_utils.py:262] Reducing Torch threads from 128 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+(EngineCore pid=184733) INFO 09-06 14:22:45 [core.py:347] init engine (profile, create kv cache, warmup model) took 9.50 s (compilation: 0.24 s)
+(EngineCore pid=184733) INFO 09-06 14:22:48 [kernel.py:308] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])
+(APIServer pid=184419) INFO 09-06 14:22:48 [api_server.py:653] Supported tasks: ['generate']
+(APIServer pid=184419) INFO 09-06 14:22:51 [hf.py:551] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+(APIServer pid=184419) WARNING 09-06 14:22:51 [model.py:1713] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.6, 'top_p': 0.9}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=184419) INFO 09-06 14:22:51 [api_server.py:657] Starting vLLM server on http://0.0.0.0:8001
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:51] Available routes are:
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /openapi.json, Methods: HEAD, GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /docs, Methods: HEAD, GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /docs/oauth2-redirect, Methods: HEAD, GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /redoc, Methods: HEAD, GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /load, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /version, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /health, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /metrics, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /tokenize, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /detokenize, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/models, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /ping, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /ping, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /invocations, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/chat/completions, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/chat/completions/batch, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/responses, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/responses/{response_id}, Methods: GET
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/completions, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/messages, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/messages/count_tokens, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /generative_scoring, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /scale_elastic_ep, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /is_scaling_elastic_ep, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/chat/completions/render, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/completions/render, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/chat/completions/derender, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /v1/completions/derender, Methods: POST
+(APIServer pid=184419) INFO 09-06 14:22:51 [launcher.py:60] Route: /inference/v1/generate, Methods: POST
+(APIServer pid=184419) INFO:     Started server process [184419]
+(APIServer pid=184419) INFO:     Waiting for application startup.
+(APIServer pid=184419) INFO:     Application startup complete.
+(APIServer pid=184419) INFO:     127.0.0.1:45260 - "GET /v1/models HTTP/1.1" 200 OK
+(APIServer pid=184419) INFO:     127.0.0.1:58226 - "POST /v1/chat/completions HTTP/1.1" 200 OK
