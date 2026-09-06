@@ -28,6 +28,13 @@ if [ -z "${HF_TOKEN:-}" ] && [ ! -f "$HOME/.cache/huggingface/token" ]; then
 fi
 
 PIDS=()
+# flashinfer JIT-compiles kernels (ninja + g++) on first startup; 8 servers
+# racing the compiler simultaneously exhaust RAM and fail. Disable the
+# flashinfer sampler (standard PyTorch sampling is equivalent for our purposes),
+# ensure ninja exists, and stagger launches.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+python3 -c "import ninja" 2>/dev/null || python3 -m pip install -q ninja || true
+
 # `vllm serve` is the modern CLI; the python -m module path is the legacy
 # interface. Use whichever this vLLM install provides.
 if python3 -c "import vllm" 2>/dev/null && command -v vllm >/dev/null 2>&1; then
@@ -35,7 +42,7 @@ if python3 -c "import vllm" 2>/dev/null && command -v vllm >/dev/null 2>&1; then
 else
     LAUNCH_MODE="module"
 fi
-echo "[CLUSTER] vLLM launch mode: ${LAUNCH_MODE}"
+echo "[CLUSTER] vLLM launch mode: ${LAUNCH_MODE} | flashinfer sampler: disabled"
 
 for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
     PORT=$((BASE_PORT + GPU_ID))
@@ -58,6 +65,7 @@ for GPU_ID in $(seq 0 $((NUM_GPUS - 1))); do
             > "${LOG_FILE}" 2>&1 &
     fi
     PIDS+=($!)
+    sleep 45   # stagger: model load + any JIT per node, avoids 8-way compile race
 done
 
 echo "[CLUSTER] Waiting for readiness (model loading can take 10-20 min for 8 replicas)..."
