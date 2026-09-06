@@ -27,6 +27,7 @@ export HF_TOKEN
 
 # --- env + deps (pip only, no sudo anywhere) ---------------------------------
 source .venv/bin/activate 2>/dev/null || { echo "[ERROR] .venv missing - run run_all_dgx.sh once first."; exit 1; }
+export VLLM_USE_FLASHINFER_SAMPLER=0
 python -c "import vllm" 2>/dev/null || pip install -q vllm
 python -c "import ninja" 2>/dev/null || pip install -q ninja
 python - <<'PY' || { echo "[ERROR] HF_TOKEN invalid."; exit 1; }
