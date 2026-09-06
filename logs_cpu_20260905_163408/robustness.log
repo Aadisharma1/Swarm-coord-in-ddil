@@ -1,0 +1,57 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from WANDB_API_KEY.
+wandb: Currently logged in as: aadisharma (aadis-legendary) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run xi36ibq0
+wandb: Tracking run with wandb version 0.29.0
+wandb: Run data is saved locally in /home/faculty/srmist1/Swarm-coord-in-ddil/wandb/run-20260905_163413-xi36ibq0
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run robustness-N50-t100
+wandb: ⭐️ View project at https://wandb.ai/aadis-legendary/incis2027-ddil
+wandb: 🚀 View run at https://wandb.ai/aadis-legendary/incis2027-ddil/runs/xi36ibq0
+wandb: uploading artifact robustness_10seeds.csv; updating run metadata
+wandb: uploading artifact robustness_10seeds.csv
+wandb: uploading artifact robustness_10seeds.csv; uploading history steps 44-49, summary, console lines 5-6
+wandb: uploading artifact robustness_10seeds.csv
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading wandb-summary.json; uploading config.yaml
+wandb: uploading data
+wandb: 
+wandb: Run history:
+wandb:              dpr_pct ▁▃▂▆▅▅▂▅▂▃▆▃▃▃▁▄▆▄▅▃▅▅▄▅▄▃▄▂▅▂▆▄▇▄█▇▂▆█▆
+wandb:            drop_rate ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:       gate_pass_rate █████████▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▅▅▅▅▅▅▅▁▁▁▁▁▁▁▁
+wandb:          gate_recall █████████▁▁▁▁▁▁▁▁▁▁▁▁▂▁▂▁▂▂▂▂▂▂▂▂▄▄▄▄▄▄▄
+wandb:       injection_rate ▁▁▁▁▁▁▁▁▁▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▄▄▄▄▄▄▄▄███████
+wandb: injections_generated ▁▁▁▁▁▁▁▁▁███████████████████████████████
+wandb:  injections_rejected ▁▁▁▁▁▁▁▁▁▂▂▂▂▂▂▂▂▃▃▃▂▃▃▃▃▄▄▄▄▄▄▄████████
+wandb:        llm_fallbacks ▆▃▅▅▅▃▁▅▄▇▃▄▅▆▂█▂▄▅▇▃▇▃▄▇▄▅▄▅▆▁▃▆▅▅▄▄▅▇▂
+wandb:                 seed ▁▂▃▃▄▆▆▇█▁▃▅▆▆▇▁▂▃▃▄▆▆▇█▁▃▃▄▅▆▇█▁▂▃▄▅▆▆█
+wandb:             sync_pct █▆▅▃▅▇▆▃▁▅▄▅▄▆▆▁▅▃▃▅▆▆▄▂█▆▃▅▆▇▅▂▆▄▆▄▄▇▆▂
+wandb: 
+wandb: Run summary:
+wandb:              dpr_pct 99.68
+wandb:            drop_rate 0.4
+wandb:       gate_pass_rate 0.482
+wandb:          gate_recall 0.518
+wandb:       injection_rate 0.5
+wandb: injections_generated 2494
+wandb:  injections_rejected 1292
+wandb:        llm_fallbacks 2494
+wandb:                 seed 51
+wandb:             sync_pct 55.55
+wandb: 
+wandb: 🚀 View run robustness-N50-t100 at: https://wandb.ai/aadis-legendary/incis2027-ddil/runs/xi36ibq0
+wandb: ⭐️ View project at: https://wandb.ai/aadis-legendary/incis2027-ddil
+wandb: Synced 5 W&B file(s), 0 media file(s), 2 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260905_163413-xi36ibq0/logs
+
+============================================================================
+  HALLUCINATION INJECTION ROBUSTNESS EXPERIMENT (measured gate recall/FAR)
+============================================================================
+[WANDB] Logging 'robustness' -> project 'incis2027-ddil'
+  [Inject Rate:   0%] DPR: 99.6% | Sync: 61.0% | Gate Recall: 100.0% | Gate FAR: 0.0%
+  [Inject Rate:   5%] DPR: 99.5% | Sync: 60.1% | Gate Recall: 6.9% | Gate FAR: 93.1%
+  [Inject Rate:  10%] DPR: 99.6% | Sync: 60.1% | Gate Recall: 12.0% | Gate FAR: 88.0%
+  [Inject Rate:  20%] DPR: 99.6% | Sync: 61.5% | Gate Recall: 22.1% | Gate FAR: 77.9%
+  [Inject Rate:  50%] DPR: 99.7% | Sync: 60.4% | Gate Recall: 51.5% | Gate FAR: 48.5%
+[OUTPUT] Robustness per-run results CSV written to: results/robustness_10seeds.csv
+[WANDB] Run closed, artifacts uploaded.

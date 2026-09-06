@@ -33,3 +33,6 @@ fig4_*.png
 fig5_*.png
 figure*.png
 pdf_page_*.png
+
+.venv/
+wandb/
