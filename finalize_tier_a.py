@@ -1,14 +1,4 @@
-#!/usr/bin/env python3
-"""
-finalize_tier_a.py — rebuild ALL Tier A outputs from existing per-run CSVs.
-Zero simulation. Use when suites completed but a post-processing crash
-(e.g., the render_ablation_plot NameError) killed the script before plots,
-LaTeX, verification, or the GitHub push happened.
 
-Usage:
-    python finalize_tier_a.py                     # reads ./results
-    python finalize_tier_a.py --results-dir path  # custom CSV dir
-"""
 
 import argparse
 import csv
@@ -19,8 +9,6 @@ import empirical_ddil_simulation as sim
 
 
 def load_rows(path):
-    """Loads a CSV and coerces every value: int -> float -> original string.
-    DictReader returns strings; the render/aggregation helpers expect numbers."""
     rows = []
     with open(path, newline='', encoding='utf-8') as f:
         for raw in csv.DictReader(f):
@@ -44,10 +32,10 @@ def main():
     rd = args.results_dir
 
     expected = {
-        'benchmark_10seeds.csv': 271,   # 10 seeds x 9 drops x 3 protocols + header
-        'ablation_10seeds.csv': 451,    # 10 seeds x 9 drops x 5 variants + header
-        'sensitivity_10seeds.csv': 91,  # 3 thetas x 3 drops x 10 seeds + header
-        'robustness_10seeds.csv': 51,   # 5 rates x 10 seeds + header
+        'benchmark_10seeds.csv': 271,
+        'ablation_10seeds.csv': 451,
+        'sensitivity_10seeds.csv': 91,
+        'robustness_10seeds.csv': 51,
     }
 
     ok = True
@@ -75,7 +63,7 @@ def main():
     sim.render_benchmark_plots(bench, seeds, drops_b)
     sim.render_ablation_plot(abl, drops_a)
 
-    # LaTeX severe-point tables (stdout; the DOCX generator computes its own tables)
+
     def agg(rows, field, scale, **filt):
         import statistics
         vals = [float(r[field]) * scale for r in rows
@@ -84,9 +72,9 @@ def main():
         return statistics.mean(vals), sim.ci95_halfwidth(vals)
 
     severe = max(drops_b)
-    # The exporter expects FRACTIONS for pct fields (it scales by 100 internally)
-    # and Joules for energy (it scales by 1/1000 internally). CSV stores percent
-    # and kJ, hence the 0.01 / 1000 converters.
+
+
+
     fields = (('sync', ('sync_pct', 0.01)), ('delivery', ('delivery_pct', 0.01)),
               ('bytes', ('delivered_bytes', 1)), ('energy', ('energy_kj', 1000)), ('dpr', ('dpr_pct', 0.01)))
     g = {k: agg(bench, f, s, mode='gossip', drop_rate=severe) for k, (f, s) in fields}

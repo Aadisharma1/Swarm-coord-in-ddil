@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
-"""
-Unit and Verification Tests for Empirical DDIL Simulation Components
-"""
+
 
 import math
 import pytest
@@ -53,13 +50,12 @@ def test_decision_oracle_mismatch():
 
 
 def test_ips_distinguishes_different_vectors():
-    """Demonstrates that unlike sum(v_state), IPS catches vector distortion."""
     raw = RawStateMatrix(origin_node=0, timestamp=1.0)
-    raw.state_vector = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # sum is 6.0
+    raw.state_vector = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     raw.energy_level = 80.0
     raw.matrix_weights = {"w_0": 0.5}
 
-    # Compressed accurately
+
     accurate = {
         "id": raw.sequence_id,
         "origin": 0,
@@ -74,12 +70,12 @@ def test_ips_distinguishes_different_vectors():
     assert ips_acc >= 0.99
     assert valid_acc is True
 
-    # Badly distorted vector that would have had the same sum(v_state) = 6.0
+
     distorted = {
         "id": raw.sequence_id,
         "origin": 0,
         "ts": 1.0,
-        "pos": [6.0, 0.0],  # Severe spatial distortion!
+        "pos": [6.0, 0.0],
         "vel": 0.0,
         "hdg": 0.0,
         "bat": 80.0,
@@ -91,7 +87,7 @@ def test_ips_distinguishes_different_vectors():
 
 
 def test_receiver_structural_validation():
-    # Valid payload
+
     valid_payload = {
         "id": "abc", "origin": 1, "ts": 10.0,
         "pos": [0.2, -0.5], "vel": 1.0, "hdg": 90.0,
@@ -99,24 +95,23 @@ def test_receiver_structural_validation():
     }
     assert validate_received_structure(valid_payload, current_time=10.0) is True
 
-    # Missing battery key
+
     missing_key = dict(valid_payload)
     del missing_key["bat"]
     assert validate_received_structure(missing_key, current_time=10.0) is False
 
-    # Out of range battery
+
     bad_bat = dict(valid_payload)
     bad_bat["bat"] = 150.0
     assert validate_received_structure(bad_bat, current_time=10.0) is False
 
-    # Future timestamp
+
     future_ts = dict(valid_payload)
     future_ts["ts"] = 50.0
     assert validate_received_structure(future_ts, current_time=10.0) is False
 
 
 def test_relay_joint_reliability_calculation():
-    """Verify relay selection uses L_im * L_mj."""
     env = simpy.Environment()
     G = nx.Graph()
     G.add_edges_from([(0, 1), (0, 2), (1, 3), (2, 3), (0, 3)])
@@ -142,19 +137,19 @@ def test_relay_joint_reliability_calculation():
     _node_registry[2] = n2
     _node_registry[3] = n3
 
-    # Direct link from 0 to 3 is degraded
+
     n0.link_scores[3] = 0.10
 
-    # Path 1: 0 -> 1 (0.9), 1 -> 3 (0.3) => joint = 0.27
+
     n0.link_scores[1] = 0.90
     n1.link_scores[3] = 0.30
 
-    # Path 2: 0 -> 2 (0.6), 2 -> 3 (0.8) => joint = 0.48
+
     n0.link_scores[2] = 0.60
     n2.link_scores[3] = 0.80
 
     best_relay = n0._find_best_relay(target_id=3)
-    assert best_relay == 2  # Node 2 must be chosen because 0.48 > 0.27
+    assert best_relay == 2
 
 
 def test_gilbert_elliott_channel():
@@ -166,7 +161,6 @@ def test_gilbert_elliott_channel():
 
 
 def test_gilbert_elliott_calibration():
-    """The stationary mean loss must match the nominal drop rate within tolerance."""
     for d in (0.0, 0.1, 0.3, 0.5, 0.8):
         rng = random.Random(1234 + int(d * 100))
         ch = GilbertElliottChannel(drop_rate=d, rng=rng)
@@ -177,7 +171,6 @@ def test_gilbert_elliott_calibration():
 
 
 def test_byte_scaled_loss_law():
-    """Effective drop probability must scale linearly with payload size (paper Eq. 3)."""
     env = simpy.Environment()
     G = nx.watts_strogatz_graph(10, 4, 0.0, seed=42)
 
@@ -201,12 +194,12 @@ def test_byte_scaled_loss_law():
     payload_big = NetworkPayload("p1", 0, 0.0, "x" * 200, 200, 3)
     payload_small = NetworkPayload("p2", 0, 0.0, "x" * 50, 50, 3)
     _, eff_big = None, None
-    # Deterministic check of the scaling law itself:
+
     eff_big = min(0.98, 0.50 * (200 / 200))
     eff_small = min(0.98, 0.50 * (50 / 200))
     assert abs(eff_big - 0.50) < 1e-9
     assert abs(eff_small - 0.125) < 1e-9
-    # And the controller applies it:
+
     ok_big = [ctrl.attempt_transmission(0, 1, payload_big, 200)[0] for _ in range(2000)]
     ok_small = [ctrl.attempt_transmission(0, 1, payload_small, 200)[0] for _ in range(2000)]
     assert abs(statistics.mean(ok_big) - 0.50) < 0.05

@@ -1,33 +1,4 @@
-#!/usr/bin/env python3
-"""
-Empirical DDIL Multi-Agent Swarm Simulation — Publication Edition (InCIS 2027)
-=============================================================================
-A discrete-event simulation integrating live vLLM OpenAI-compatible API servers
-(running Meta-Llama-3-8B-Instruct on an 8x A100 GPU cluster) with SimPy and NetworkX.
 
-Evaluates 3 protocol architectures under progressive DDIL degradation:
-  1. Gossip Protocol (Baseline 1: Blind TTL-based flooding of raw state matrices)
-  2. Epidemic Routing (Baseline 2: Store-and-forward anti-entropy dissemination)
-  3. Agentic SLM Protocol (Proposed: Task-oriented semantic compression + link memory)
-
-Key Architectural & Evaluation Enhancements:
-  - Multi-invariant task-relevant state compression (~4-5.6x reduction)
-  - Sender-side Invariant Preservation Score (IPS) verification gate
-  - Receiver-side zero-ground-truth structural and freshness validation
-  - Decision Preservation Rate (DPR) measuring operational decision fidelity
-  - Genuine Two-Hop Joint Path Reliability relay routing: m* = argmax (L_i(m) * L_m(j))
-  - Gilbert-Elliott burst loss channel model with stateful burst degradation
-  - Systematic Ablation Suite (Full, No Memory, No Compression, No Relay, No Verification)
-  - IPS Threshold Sensitivity Analysis (theta in {0.90, 0.95, 0.98})
-  - Hallucination Injection Robustness Suite (precision, recall, false-accept rate)
-  - Parametric Energy Modeling (RF transmission vs. SLM inference)
-  - Multi-seed statistical aggregation with 95% Confidence Intervals
-
-Primary Research Question:
-  Can task-oriented semantic synchronization preserve decentralized operational
-  decisions more efficiently than conventional epidemic/gossip dissemination
-  under severe DDIL conditions?
-"""
 
 import argparse
 import asyncio
@@ -45,69 +16,62 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
 import matplotlib
-matplotlib.use("Agg")  # headless-safe backend (required on GPU servers without a display)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import networkx as nx
 import simpy
 
-# ============================================================================
-# Simulation Configuration Constants
-# ============================================================================
 
-NUM_NODES: int = 50                      # 50 Swarm Nodes load-balanced across 8 A100 GPUs
-SIM_DURATION: float = 100.0              # Simulation time units per benchmark run
-BROADCAST_INTERVAL: float = 2.0          # Periodic state broadcast frequency
-BASE_LATENCY: float = 0.5                # Baseline network latency (time units)
-MAX_LATENCY_SPIKE: float = 8.0           # Maximum latency spike magnitude
-DISCONNECT_PROBABILITY: float = 0.15     # Intermittent node disconnection chance
-DISCONNECT_DURATION: float = 5.0         # Duration of intermittent disconnects
-GOSSIP_TTL: int = 3                      # Max hops for baseline gossip re-broadcast
-LINK_RELIABILITY_DECAY: float = 0.10     # EMA decay rate for link scoring
-LINK_RELIABILITY_THRESHOLD: float = 0.25 # Minimum link score for routing
 
-# Sweep parameters for network degradation benchmark
+
+
+NUM_NODES: int = 50
+SIM_DURATION: float = 100.0
+BROADCAST_INTERVAL: float = 2.0
+BASE_LATENCY: float = 0.5
+MAX_LATENCY_SPIKE: float = 8.0
+DISCONNECT_PROBABILITY: float = 0.15
+DISCONNECT_DURATION: float = 5.0
+GOSSIP_TTL: int = 3
+LINK_RELIABILITY_DECAY: float = 0.10
+LINK_RELIABILITY_THRESHOLD: float = 0.25
+
+
 DROP_RATE_SWEEP: List[float] = [0.0, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 
-# Fixed default seed
+
 RANDOM_SEED: int = 42
 
-# Base URL mapping for 8 live vLLM GPU server ports (8001 through 8008)
+
 VLLM_BASE_PORTS: List[int] = [8001 + i for i in range(8)]
 VLLM_MODEL_NAME: str = os.environ.get("VLLM_MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
 
-# Benchmark output filenames
+
 PLOT_SYNC_PATH: str = "fig_sync_vs_drop.png"
 PLOT_ENERGY_PATH: str = "fig_energy_vs_drop.png"
 PLOT_ABLATION_PATH: str = "fig_ablation_sync.png"
 
 
-# ============================================================================
-# Ablation & Execution Configuration Dataclass
-# ============================================================================
+
+
+
 
 @dataclass
 class RunConfig:
-    """Configures architectural components for ablation & sensitivity studies."""
-    enable_compression: bool = True       # Semantic SLM state compression
-    enable_link_memory: bool = True       # EMA link reliability tracking
-    enable_relay: bool = True             # Adaptive 2-hop neighbor relaying
-    enable_drift_check: bool = True       # Sender-side IPS verification gate
-    ips_threshold: float = 0.95           # Minimum aggregate IPS for transmission
-    injection_rate: float = 0.0           # Controlled hallucination injection rate
+    enable_compression: bool = True
+    enable_link_memory: bool = True
+    enable_relay: bool = True
+    enable_drift_check: bool = True
+    ips_threshold: float = 0.95
+    injection_rate: float = 0.0
     label: str = "Full Agentic SLM"
 
 
-# ============================================================================
-# Parametric Energy Modeling (RF vs. Edge Compute)
-# ============================================================================
+
+
+
 
 class EnergyTracker:
-    """
-    Parametric energy model representing RF transmission vs SLM edge compute.
-    Modeled as sensitivity analysis:
-        E_TX_BYTE   : 0.05 Joules / byte transmitted (RF Front-End Cost)
-        E_LLM_TOKEN : 0.01 Joules / token generated (Quantized/Edge Inference Proxy)
-    """
     E_TX_BYTE: float = 0.05
     E_LLM_TOKEN: float = 0.01
 
@@ -124,16 +88,12 @@ class EnergyTracker:
         return cls.calculate_rf_energy(bytes_transmitted) + cls.calculate_compute_energy(tokens_generated)
 
 
-# ============================================================================
-# Data Structures
-# ============================================================================
+
+
+
 
 @dataclass
 class RawStateMatrix:
-    """
-    Represents the full uncompressed multi-dimensional telemetry state.
-    Serialized JSON payload: ~450 bytes.
-    """
     origin_node: int
     timestamp: float
     sequence_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
@@ -156,7 +116,6 @@ class RawStateMatrix:
 
 @dataclass
 class NetworkPayload:
-    """Encapsulates a payload transmitted across the dynamic mesh network."""
     payload_id: str
     origin_node: int
     timestamp: float
@@ -167,14 +126,13 @@ class NetworkPayload:
     visited_nodes: Set[int] = field(default_factory=set)
     ground_truth: Optional[RawStateMatrix] = None
     tokens_generated: int = 0
-    # Raw-state reference size used by the byte-scaled loss law; carried through
-    # forwarding hops so loss scaling stays consistent with the origin broadcast.
+
+
     ref_raw_bytes: int = 450
 
 
 @dataclass
 class TransmissionRecord:
-    """Records individual transmission outcomes for performance metrics."""
     sender: int
     receiver: int
     payload_id: str
@@ -184,16 +142,11 @@ class TransmissionRecord:
     failure_reason: Optional[str] = None
 
 
-# ============================================================================
-# Task-Oriented Decision Oracle & DPR Metric
-# ============================================================================
+
+
+
 
 class DecisionOracle:
-    """
-    Maps state representations to discrete operational decisions:
-      (Spatial Quadrant, Priority Tier, Energy Action).
-    Used to compute Decision Preservation Rate (DPR).
-    """
 
     @staticmethod
     def decide_from_raw(raw: RawStateMatrix) -> Tuple[str, str, str]:
@@ -225,19 +178,15 @@ class DecisionOracle:
         return sum(1 for a, b in zip(d1, d2) if a == b) / len(d1)
 
 
-# ============================================================================
-# Invariant Preservation Score (IPS) & Receiver Structural Validation
-# ============================================================================
+
+
+
 
 def calculate_invariant_preservation(
     ground_truth: RawStateMatrix,
     decoded: dict,
     threshold: float = 0.95
 ) -> Tuple[Dict[str, float], float, bool]:
-    """
-    Sender-side verification: Computes per-invariant errors and aggregate IPS.
-    Validates whether the compressed token preserves essential task invariants.
-    """
     required = ["id", "origin", "ts", "pos", "vel", "hdg", "bat", "pri"]
     if not isinstance(decoded, dict) or not all(k in decoded for k in required):
         return {}, 0.0, False
@@ -286,10 +235,6 @@ def calculate_invariant_preservation(
 
 
 def validate_received_structure(parsed: dict, current_time: float) -> bool:
-    """
-    Receiver-side validation: Requires zero sender ground truth.
-    Performs structural, schema, range, and temporal freshness checks.
-    """
     required = ["id", "origin", "ts", "pos", "vel", "hdg", "bat", "pri", "st"]
     if not isinstance(parsed, dict) or not all(k in parsed for k in required):
         return False
@@ -305,13 +250,11 @@ def validate_received_structure(parsed: dict, current_time: float) -> bool:
     return True
 
 
-# ============================================================================
-# Empirical Metrics Collector
-# ============================================================================
+
+
+
 
 class EmpiricalMetricsCollector:
-    """Aggregates transmission metrics, byte throughput, drift failures, DPR, and
-    verification-gate / fallback accounting."""
 
     def __init__(self):
         self.records: List[TransmissionRecord] = []
@@ -343,7 +286,6 @@ class EmpiricalMetricsCollector:
         self.llm_fallbacks += 1
 
     def record_injection(self, rejected: bool) -> None:
-        """Records a controlled hallucination injection and whether the IPS gate rejected it."""
         self.injections_generated += 1
         if rejected:
             self.injections_rejected += 1
@@ -384,13 +326,11 @@ class EmpiricalMetricsCollector:
 
     @property
     def gate_pass_rate(self) -> float:
-        """Fraction of SLM compressions that passed the sender-side IPS gate."""
         total = self.parse_successes + self.drift_failures
         return self.parse_successes / total if total > 0 else 1.0
 
     @property
     def injection_rejection_rate(self) -> float:
-        """Fraction of injected hallucinations rejected by the IPS gate (gate recall)."""
         if self.injections_generated == 0:
             return 0.0
         return self.injections_rejected / self.injections_generated
@@ -408,21 +348,11 @@ class EmpiricalMetricsCollector:
         self.injections_rejected = 0
 
 
-# ============================================================================
-# Gilbert-Elliott Burst Loss Channel Model & Environment Controller
-# ============================================================================
+
+
+
 
 class GilbertElliottChannel:
-    """
-    Two-state Markov model: GOOD (low loss) <-> BAD (high burst loss).
-    Captures temporal correlation and burst drop dynamics typical of extreme DDIL.
-
-    Calibration guarantee: the stationary mean loss of the chain equals the nominal
-    drop rate D (pi_bad * loss_bad + (1 - pi_bad) * loss_good = D), so the swept
-    x-axis is the *realized* long-run loss fraction, not merely a label. Burst
-    intensity emerges from the structure: the BAD-state dwell time (1/p_b2g) grows
-    with stress, producing longer bursts at high degradation.
-    """
     def __init__(self, drop_rate: float, rng: Optional[random.Random] = None):
         self.rng = rng or random.Random()
         self.state = "GOOD"
@@ -431,7 +361,7 @@ class GilbertElliottChannel:
             self.p_g2b, self.p_b2g = 0.0, 0.35
             self.loss_good, self.loss_bad = 0.0, 0.0
             return
-        # Transition probabilities target stationary bad-fraction pi ~ D
+
         self.p_b2g = max(0.05, 0.35 * (1.0 - drop_rate))
         self.p_g2b = min(0.98, 0.35 * drop_rate / max(1e-9, 1.0 - drop_rate))
         pi = self.p_g2b / max(1e-9, self.p_g2b + self.p_b2g)
@@ -455,7 +385,6 @@ class GilbertElliottChannel:
 
 
 class EnvironmentController:
-    """Orchestrates dynamic link degradations, burst loss, and intermittent disconnections."""
 
     def __init__(self, env: simpy.Environment, graph: nx.Graph, drop_rate: float, seed: int = RANDOM_SEED):
         self.env = env
@@ -486,8 +415,8 @@ class EnvironmentController:
 
         base_loss_prob = self.channel.sample_loss_probability()
         size_factor = payload.byte_size / max(1, ref_raw_bytes)
-        # Byte-scaled loss law (paper Eq. 3): loss probability scales linearly with
-        # payload size relative to the raw-state reference.
+
+
         effective_drop_prob = min(0.98, base_loss_prob * size_factor)
 
         if self.rng.random() < effective_drop_prob:
@@ -497,12 +426,11 @@ class EnvironmentController:
         return True, latency, None
 
 
-# ============================================================================
-# Node Implementation 1: Gossip Protocol (Baseline 1 - Demers et al., 1987)
-# ============================================================================
+
+
+
 
 class GossipNode:
-    """Baseline 1: Blind TTL-based flooding of full, raw state matrices (~450B)."""
 
     def __init__(self, node_id: int, env: simpy.Environment, ctrl: EnvironmentController,
                  graph: nx.Graph, metrics: EmpiricalMetricsCollector):
@@ -558,7 +486,7 @@ class GossipNode:
             return
         self._seen_payloads.add(payload.payload_id)
         self.state_matrix[payload.payload_id] = payload.raw_content
-        self.metrics.record_decision(1.0)  # Raw uncompressed state has 100% decision preservation
+        self.metrics.record_decision(1.0)
 
         if payload.ttl > 1:
             fwd_payload = NetworkPayload(
@@ -578,12 +506,11 @@ class GossipNode:
                     self.env.process(self._send_payload(nbr, fwd_payload, fwd_payload.ref_raw_bytes))
 
 
-# ============================================================================
-# Node Implementation 2: Epidemic Routing (Baseline 2 - Vahdat & Becker, 2000)
-# ============================================================================
+
+
+
 
 class EpidemicNode:
-    """Baseline 2: Store-and-Forward anti-entropy dissemination to all unvisited neighbors."""
 
     def __init__(self, node_id: int, env: simpy.Environment, ctrl: EnvironmentController,
                  graph: nx.Graph, metrics: EmpiricalMetricsCollector):
@@ -594,9 +521,9 @@ class EpidemicNode:
         self.metrics = metrics
         self.state_matrix: Dict[str, str] = {}
         self.buffer: Dict[str, NetworkPayload] = {}
-        # Sender-side delivery ledger: payload_id -> neighbor ids successfully delivered.
-        # Guarantees true anti-entropy semantics (each payload delivered to each neighbor
-        # at most once); only channel-failed transmissions are retried on later cycles.
+
+
+
         self._delivered_to: Dict[str, Set[int]] = {}
         self.env.process(self._broadcast_loop())
         self.env.process(self._anti_entropy_loop())
@@ -650,8 +577,8 @@ class EpidemicNode:
             _node_registry[receiver_id].receive_payload(payload)
 
     def receive_payload(self, payload: NetworkPayload) -> None:
-        # Duplicate suppression: concurrent anti-entropy sends from multiple
-        # neighbors can deliver the same payload twice before visited-set updates.
+
+
         if payload.payload_id in self.state_matrix:
             return
         self.state_matrix[payload.payload_id] = payload.raw_content
@@ -672,19 +599,14 @@ class EpidemicNode:
         self.buffer[payload.payload_id] = fwd_payload
 
 
-# ============================================================================
-# Shared Async Event Loop & vLLM Preflight Readiness Gate
-# ============================================================================
+
+
+
 
 _SHARED_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 
 def _get_shared_loop() -> asyncio.AbstractEventLoop:
-    """Returns a process-wide event loop reused across all compression calls.
-
-    Reusing one loop avoids leaking thousands of per-call event loops (each
-    holding selector file descriptors) over the ~2,500 compression events per
-    run, and lets the OS-level TCP connections to vLLM stay warm."""
     global _SHARED_LOOP
     if _SHARED_LOOP is None or _SHARED_LOOP.is_closed():
         _SHARED_LOOP = asyncio.new_event_loop()
@@ -697,14 +619,6 @@ def preflight_vllm_endpoints(
     max_wait_s: float = 1200.0,
     probe_timeout_s: float = 3.0
 ) -> None:
-    """Blocks until every vLLM endpoint answers /v1/models, then issues one warmup
-    completion per endpoint.
-
-    This gate prevents the single most common GPU-cluster failure mode: the
-    benchmark starting before model loading finishes, every live inference
-    timing out, and the entire agentic arm silently degrading to the
-    deterministic fallback (results would look valid but carry no LLM signal).
-    """
     ports = ports or list(VLLM_BASE_PORTS)
     loop = _get_shared_loop()
 
@@ -757,18 +671,11 @@ def preflight_vllm_endpoints(
     print("[PREFLIGHT] Complete.")
 
 
-# ============================================================================
-# Node Implementation 3: Proposed Agentic SLM Node
-# ============================================================================
+
+
+
 
 class LLMAgentNode:
-    """
-    Proposed Agentic Node featuring:
-      - Task-oriented multi-invariant semantic compression (~4-5.6x reduction)
-      - Sender-side IPS verification gate preventing hallucination propagation
-      - Receiver-side zero-ground-truth structural validation
-      - 2-hop joint path reliability relaying: m* = argmax (L_i(m) * L_m(j))
-    """
 
     def __init__(self, node_id: int, env: simpy.Environment, ctrl: EnvironmentController,
                  graph: nx.Graph, metrics: EmpiricalMetricsCollector, config: Optional[RunConfig] = None):
@@ -789,10 +696,6 @@ class LLMAgentNode:
 
     @staticmethod
     def _fallback_compress(raw_state: RawStateMatrix, inject_corruption: bool = False) -> Tuple[str, int, int]:
-        """
-        Deterministic multi-invariant compression (~80-110 bytes, ~30 tokens).
-        Produces identical verifiable schema across CPU and GPU modes.
-        """
         pos = [round(raw_state.state_vector[0], 2), round(raw_state.state_vector[1], 2)]
         vel = round(raw_state.state_vector[2], 2)
         hdg = round(raw_state.state_vector[3], 2)
@@ -828,9 +731,6 @@ class LLMAgentNode:
 
     @staticmethod
     def _apply_injection_to_content(content: str) -> str:
-        """Applies the same corruption operators used by the deterministic fallback to
-        a live SLM completion, so the hallucination-robustness experiment behaves
-        identically in GPU and CPU modes."""
         try:
             parsed = json.loads(content)
             if not isinstance(parsed, dict):
@@ -853,15 +753,14 @@ class LLMAgentNode:
             return content
 
     async def _async_compress_state(self, raw_state: RawStateMatrix) -> Tuple[str, int, int, bool]:
-        """Returns (content, byte_size, tokens_generated, used_fallback)."""
         if not self.config.enable_compression:
             raw_str = raw_state.to_json_str()
             return raw_str, len(raw_str.encode('utf-8')), 0, False
 
-        # Inject controlled hallucination if requested
+
         should_corrupt = (self.config.injection_rate > 0.0 and random.random() < self.config.injection_rate)
 
-        # CPU-only reproduction mode
+
         if os.environ.get("DDIL_DISABLE_VLLM", "").lower() in ("1", "true", "yes"):
             content, nbytes, toks = self._fallback_compress(raw_state, inject_corruption=should_corrupt)
             return content, nbytes, toks, True
@@ -920,7 +819,7 @@ class LLMAgentNode:
             if used_fallback:
                 self.metrics.record_llm_fallback()
 
-            # Sender-side Invariant Preservation Score (IPS) verification gate
+
             is_injected = (self.config.injection_rate > 0.0)
             if self.config.enable_drift_check and self.config.enable_compression:
                 try:
@@ -930,7 +829,7 @@ class LLMAgentNode:
                     )
                     self.metrics.record_parse_outcome(success=is_valid, is_drift_failure=(not is_valid), ips=ips)
                     if not is_valid:
-                        # Drop hallucinated output before transmitting over RF
+
                         if is_injected:
                             self.metrics.record_injection(rejected=True)
                         yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
@@ -944,7 +843,7 @@ class LLMAgentNode:
                     yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
                     continue
             elif is_injected:
-                # Verification gate disabled: injected tokens pass unconditionally
+
                 self.metrics.record_injection(rejected=False)
 
             payload = NetworkPayload(
@@ -978,10 +877,6 @@ class LLMAgentNode:
             yield self.env.timeout(BROADCAST_INTERVAL + random.uniform(-0.2, 0.2))
 
     def _find_best_relay(self, target_id: int) -> Optional[int]:
-        """
-        Selects relay m* = argmax_{m} (L_i(m) * L_m(j)) over 2-hop neighbors.
-        Uses genuine joint path reliability from active neighbor link memory.
-        """
         if not self.config.enable_relay:
             return None
         best, best_score = None, 0.0
@@ -1023,7 +918,7 @@ class LLMAgentNode:
             return
         self._seen_payloads.add(payload.payload_id)
 
-        # Receiver-side zero-ground-truth structural validation
+
         try:
             parsed = json.loads(payload.raw_content)
         except Exception:
@@ -1035,7 +930,7 @@ class LLMAgentNode:
                 self.metrics.record_parse_outcome(success=False, is_drift_failure=True)
                 return
 
-            # Compute Decision Preservation Rate (DPR) if ground truth is tracked in simulation
+
             if payload.ground_truth is not None:
                 d_raw = DecisionOracle.decide_from_raw(payload.ground_truth)
                 d_comp = DecisionOracle.decide_from_compressed(parsed)
@@ -1064,13 +959,13 @@ class LLMAgentNode:
                     self.env.process(self._send_payload(nbr, fwd_payload, fwd_payload.ref_raw_bytes))
 
 
-# Global Registry for node communication
+
 _node_registry: Dict[int, object] = {}
 
 
-# ============================================================================
-# Topology Builder & Sync Math
-# ============================================================================
+
+
+
 
 def build_mesh_topology(num_nodes: int, seed: int = RANDOM_SEED) -> nx.Graph:
     k = 6 if num_nodes >= 6 else 4
@@ -1092,9 +987,9 @@ def calculate_state_sync_rate(registry: Dict[int, object]) -> float:
     return statistics.mean(sync_percentages)
 
 
-# ============================================================================
-# Single Benchmark Run Execution
-# ============================================================================
+
+
+
 
 def execute_simulation_run(
     mode: str,
@@ -1102,13 +997,6 @@ def execute_simulation_run(
     seed: int = RANDOM_SEED,
     config: Optional[RunConfig] = None
 ) -> Tuple[float, float, int, float, int, float, float, int, int, int, int, int, float]:
-    """
-    Executes one simulation run.
-    Returns: (sync_rate, delivery_rate, total_bytes, total_energy_joules,
-              tokens_generated, mean_dpr, mean_ips, llm_fallbacks,
-              injections_generated, injections_rejected,
-              parse_successes, drift_failures, gate_pass_rate)
-    """
     global _node_registry
     random.seed(seed)
 
@@ -1150,8 +1038,8 @@ def execute_simulation_run(
     )
 
 
-# Student-t critical values (two-sided, 95%) indexed by degrees of freedom;
-# beyond df=30 the normal approximation 1.96 is used.
+
+
 _T_CRIT_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
               8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
               15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
@@ -1159,7 +1047,6 @@ _T_CRIT_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.
 
 
 def ci95_halfwidth(values: List[float]) -> float:
-    """Half-width of the 95% confidence interval of the mean (Student-t)."""
     n = len(values)
     if n < 2:
         return 0.0
@@ -1171,15 +1058,14 @@ def ci95_halfwidth(values: List[float]) -> float:
     return t * s / math.sqrt(n)
 
 
-# ============================================================================
-# Optional Weights & Biases logging (activates when WANDB_API_KEY is set)
-# ============================================================================
+
+
+
 
 _WANDB_RUN = None
 
 
 def init_wandb(suite: str, extra_config: Optional[dict] = None):
-    """Initializes W&B when WANDB_API_KEY is set. Never raises."""
     global _WANDB_RUN
     if not os.environ.get("WANDB_API_KEY"):
         print("[WANDB] WANDB_API_KEY not set — W&B logging disabled.")
@@ -1205,7 +1091,6 @@ def init_wandb(suite: str, extra_config: Optional[dict] = None):
 
 
 def wandb_log_row(row: dict, step: int) -> None:
-    """Logs one per-run record (numeric fields only). Best-effort."""
     if _WANDB_RUN is None:
         return
     try:
@@ -1216,7 +1101,6 @@ def wandb_log_row(row: dict, step: int) -> None:
 
 
 def wandb_finish(artifacts: Optional[List[str]] = None) -> None:
-    """Logs result files as artifacts and closes the W&B run. Best-effort."""
     global _WANDB_RUN
     if _WANDB_RUN is None:
         return
@@ -1235,11 +1119,11 @@ def wandb_finish(artifacts: Optional[List[str]] = None) -> None:
         _WANDB_RUN = None
 
 
-# ============================================================================
-# Per-seed row builders (shared by the CLI suites and the parallel driver so the
-# parallel sweep produces byte-identical schemas; each run seeds itself, so
-# sharding seeds across processes is deterministic and embarrassingly parallel)
-# ============================================================================
+
+
+
+
+
 
 def benchmark_row_for(seed: int, dr: float, mode: str) -> dict:
     (sync, delivery, total_bytes, energy, tokens, dpr, ips,
@@ -1344,9 +1228,9 @@ def robustness_rows_for_seed(seed: int, injection_rates: List[float], drop_rate:
     return rows
 
 
-# ============================================================================
-# LaTeX Booktabs Table Exports
-# ============================================================================
+
+
+
 
 def export_latex_booktabs_table(
     gossip_final: Dict[str, Tuple[float, float]],
@@ -1366,7 +1250,7 @@ def export_latex_booktabs_table(
     e_sync, e_del, e_bytes, e_energy, e_dpr = (epidemic_final[k] for k in ("sync", "delivery", "bytes", "energy", "dpr"))
     a_sync, a_del, a_bytes, a_energy, a_dpr = (agentic_final[k] for k in ("sync", "delivery", "bytes", "energy", "dpr"))
 
-    pct = chr(92) + '%'  # literal backslash-percent; py<=3.11 forbids backslashes in f-string expressions: py<=3.11 forbids backslashes inside f-string expressions
+    pct = chr(92) + '%'
     latex_table = f"""
 % ============================================================================
 % Table 1: IEEE/Springer Booktabs Table (Severe {drop_rate_pct:.0f}% Drop-Rate Metrics)
@@ -1385,35 +1269,6 @@ Epidemic Routing (Baseline 2)  & {cell(e_dpr[0], e_dpr[1], 100, pct)} & {cell(e_
 \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
-"""
-    print(latex_table)
-
-
-def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[float, float]]], drop_rate_pct: float = 80.0) -> None:
-    def cell(mean: float, std: float, scale: float, suffix: str, digits: int = 1) -> str:
-        m = mean * scale
-        s = std * scale
-        base = f"{m:.{digits}f}{suffix}"
-        if s > 0:
-            base += f" \\pm {s:.{digits}f}{suffix}"
-        return base
-
-    rows = []
-    pct = chr(92) + '%'  # literal backslash-percent (py<=3.11 f-string rule)
-    for label, metrics in ablation_results.items():
-        dpr = metrics["dpr"]
-        syn = metrics["sync"]
-        dvr = metrics["delivery"]
-        byt = metrics["bytes"]
-        eng = metrics["energy"]
-        is_bold = (label == "Full Agentic SLM")
-        b = "\\textbf{" if is_bold else ""
-        eb = "}" if is_bold else ""
-        row = f"{b}{label}{eb} & {b}{cell(dpr[0], dpr[1], 100, pct)}{eb} & {b}{cell(dvr[0], dvr[1], 100, pct)}{eb} & {b}{cell(syn[0], syn[1], 100, pct)}{eb} & {b}{cell(byt[0], byt[1], 1/1024, ' KB')}{eb} & {b}{cell(eng[0], eng[1], 1/1000, ' kJ', 2)}{eb} \\\\"
-        rows.append(row)
-
-    table_rows = "\n".join(rows)
-    latex_table = f"""
 % ============================================================================
 % Table 3: Systematic Ablation Study Results under Severe {drop_rate_pct:.0f}% Drop Rate
 % ============================================================================
@@ -1429,16 +1284,6 @@ def export_ablation_latex_table(ablation_results: Dict[str, Dict[str, Tuple[floa
 \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
-"""
-    print(latex_table)
-
-
-# ============================================================================
-# Main Comparative Benchmark & Output Generators
-# ============================================================================
-
-def render_ablation_plot(csv_rows: List[dict], drop_rates: List[float]) -> None:
-    """Renders fig_ablation_sync.png (sync % vs drop rate per architectural variant,
     mean +/- 95% CI bands) from per-run CSV rows. Reusable by the CLI suite and
     the finalize-from-CSV recovery path."""
     drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
@@ -1487,8 +1332,6 @@ def render_ablation_plot(csv_rows: List[dict], drop_rates: List[float]) -> None:
 
 
 def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: List[float]) -> None:
-    """Renders fig_sync_vs_drop.png and fig_energy_vs_drop.png from per-run CSV rows
-    (mean +/- 95% CI bands). Reusable by both the CLI suite and the parallel driver."""
     drop_percentages: List[float] = [dr * 100 for dr in drop_rates]
     multi_seed = len(seeds) > 1
 
@@ -1501,7 +1344,7 @@ def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: L
         pairs = [agg(mode, dr, field) for dr in drop_rates]
         return [p[0] for p in pairs], [p[1] for p in pairs]
 
-    # CSV fields are already in plot units (sync/delivery in %, energy in kJ)
+
     gossip_syncs, gossip_syncs_sd = series("gossip", "sync_pct")
     epidemic_syncs, epidemic_syncs_sd = series("epidemic", "sync_pct")
     agentic_syncs, agentic_syncs_sd = series("agentic", "sync_pct")
@@ -1509,7 +1352,7 @@ def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: L
     epidemic_energies, epidemic_energies_sd = series("epidemic", "energy_kj")
     agentic_energies, agentic_energies_sd = series("agentic", "energy_kj")
 
-    # Plot 1: fig_sync_vs_drop.png
+
     fig1, ax1 = plt.subplots(figsize=(10, 6), dpi=200)
     ax1.plot(drop_percentages, gossip_syncs, 's--', color='#d62828', lw=2.2, ms=7,
              markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
@@ -1550,7 +1393,7 @@ def render_benchmark_plots(csv_rows: List[dict], seeds: List[int], drop_rates: L
     plt.close(fig1)
     print(f"[OUTPUT] Plot 1 saved to: {PLOT_SYNC_PATH}")
 
-    # Plot 2: fig_energy_vs_drop.png
+
     fig2, ax2 = plt.subplots(figsize=(10, 6), dpi=200)
     ax2.plot(drop_percentages, gossip_energies, 's--', color='#d62828', lw=2.2, ms=7,
              markerfacecolor='#f77f7f', markeredgecolor='#d62828', mew=1.5,
@@ -1626,7 +1469,7 @@ def run_empirical_benchmark_suite(
             writer.writerows(csv_rows)
         print(f"[OUTPUT] Raw per-run results CSV written to: {csv_out}")
 
-    # Fallback-contamination audit: warn loudly if live inference silently degraded
+
     agentic_rows = [r for r in csv_rows if r["mode"] == "agentic"]
     if agentic_rows and not multi_seed:
         total_fb = sum(r["llm_fallbacks"] for r in agentic_rows)
@@ -1636,8 +1479,6 @@ def run_empirical_benchmark_suite(
                   "Check endpoint readiness (see preflight_vllm_endpoints).")
 
     def agg(mode: str, dr: float) -> Dict[str, Tuple[float, float]]:
-        """Aggregate per-run CSV rows -> (mean, 95% CI). Energy held in joules
-        internally (row field is kJ, scale 1e-3 converts kJ -> J)."""
         fields = {"sync": ("sync_pct", 100.0), "delivery": ("delivery_pct", 100.0),
                   "bytes": ("delivered_bytes", 1.0), "energy": ("energy_kj", 1e-3),
                   "tokens": ("tokens_generated", 1.0), "dpr": ("dpr_pct", 100.0),
@@ -1663,9 +1504,9 @@ def run_empirical_benchmark_suite(
     return agg_results
 
 
-# ============================================================================
-# Ablation Studies Suite Runner
-# ============================================================================
+
+
+
 
 def run_ablation_suite(
     seeds: Optional[List[int]] = None,
@@ -1740,9 +1581,9 @@ def run_ablation_suite(
     return agg_ablation
 
 
-# ============================================================================
-# Addition: IPS Threshold Sensitivity Analysis (Item 1 & 6)
-# ============================================================================
+
+
+
 
 def run_sensitivity_experiment(
     seeds: Optional[List[int]] = None,
@@ -1811,9 +1652,9 @@ def run_sensitivity_experiment(
     return results
 
 
-# ============================================================================
-# Addition: Hallucination Injection Robustness Experiment (Item 7)
-# ============================================================================
+
+
+
 
 def run_robustness_experiment(
     seeds: Optional[List[int]] = None,
@@ -1821,13 +1662,6 @@ def run_robustness_experiment(
     drop_rate: float = 0.40,
     csv_out: Optional[str] = None
 ) -> Dict[float, Dict[str, float]]:
-    """Hallucination-injection robustness with directly MEASURED gate performance.
-
-    For each injection rate we count how many injected (corrupted) tokens the
-    sender-side IPS gate rejects. Gate recall = rejected / injected; the gate
-    false-accept rate = 1 - recall. Downstream damage is measured by DPR and
-    state synchronization. No proxy formulas: every number is counted.
-    """
     seeds = seeds or [RANDOM_SEED]
     injection_rates = injection_rates or [0.0, 0.05, 0.10, 0.20, 0.50]
 
@@ -1891,12 +1725,12 @@ def run_robustness_experiment(
     return robustness_results
 
 
-# ============================================================================
-# Interactive CLI Bootstrapper & Runner
-# ============================================================================
+
+
+
 
 def interactive_cli_bootstrapper() -> None:
-    # Batch-safety: never attempt interactive input without a TTY
+
     if sys.stdin is None or not sys.stdin.isatty():
         print("[MODE] No interactive terminal available — running standard benchmark with defaults.")
         run_empirical_benchmark_suite()
@@ -1907,7 +1741,7 @@ def interactive_cli_bootstrapper() -> None:
     print("  ==================================================================")
     print("=" * 76)
 
-    # 1. Token / Hugging Face check
+
     cached_token = os.environ.get("HF_TOKEN", "")
     print(f"\n[1] Authentication & Environment:")
     if cached_token:
@@ -1920,7 +1754,7 @@ def interactive_cli_bootstrapper() -> None:
         if user_tok:
             os.environ["HF_TOKEN"] = user_tok
 
-    # 2. Execution Backend Mode
+
     print(f"\n[2] Inference Backend Selection:")
     print("    [A] Live A100 GPU vLLM Cluster (Ports 8001-8008, Llama-3-8B)")
     print("    [B] Deterministic CPU Fallback (Instant reproducible benchmark)")
@@ -1932,7 +1766,7 @@ def interactive_cli_bootstrapper() -> None:
         os.environ.pop("DDIL_DISABLE_VLLM", None)
         print("    >> Backend set to: Live 8x A100 vLLM Endpoints")
 
-    # 3. Execution Pipeline Selection
+
     print(f"\n[3] Select Execution Pipeline:")
     print("    [1] Full Empirical Benchmark (Gossip vs Epidemic vs Agentic SLM, 0%-80% Drop)")
     print("    [2] Full Ablation Study Suite (Full System vs A1, A2, A3, A4)")
@@ -2008,8 +1842,8 @@ if __name__ == "__main__":
     if live_mode and not args.skip_preflight:
         preflight_vllm_endpoints(max_wait_s=args.preflight_wait)
 
-    # Non-TTY guard: batch schedulers (SLURM/tmux/nohup) provide no stdin; fall back
-    # to the standard benchmark instead of hanging or crashing on input().
+
+
     interactive_requested = (args.mode == "interactive" and len(sys.argv) == 1)
     if interactive_requested and sys.stdin is not None and not sys.stdin.isatty():
         print("[MODE] Non-interactive stdin detected — running standard benchmark with defaults.")

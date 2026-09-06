@@ -1,11 +1,4 @@
-#!/usr/bin/env python3
-"""
-Generates the system-architecture figure for the InCIS-2027 manuscript:
-task-oriented semantic compression pipeline with sender-side IPS verification,
-byte-scaled Gilbert-Elliott burst channel, receiver-side validation, and DPR.
 
-Author: Aadi Sharma, September 2026
-"""
 
 import matplotlib
 matplotlib.use("Agg")
@@ -28,12 +21,12 @@ def figure1_architecture():
     ax.set_ylim(0, 62)
     ax.axis("off")
 
-    C_A = "#d7e9f7"    # perception
-    C_B = "#cde9dd"    # SLM compression
-    C_C = "#fdebd0"    # verification gate
-    C_D = "#e8e6f4"    # link memory / relay
-    C_R1 = "#d8e6cf"   # receiver validation
-    C_R2 = "#eef4ea"   # receiver decision
+    C_A = "#d7e9f7"
+    C_B = "#cde9dd"
+    C_C = "#fdebd0"
+    C_D = "#e8e6f4"
+    C_R1 = "#d8e6cf"
+    C_R2 = "#eef4ea"
     C_EDGE = "#40679e"
     C_GREEN = "#3c6e47"
     C_TXT = "#1a1a2e"
@@ -51,7 +44,7 @@ def figure1_architecture():
     def label(x, y, text, size=9, weight="normal", color=C_TXT, ha="center"):
         ax.text(x, y, text, ha=ha, va="center", fontsize=size, fontweight=weight, color=color, zorder=4)
 
-    # ---------------- Sender column (left) ----------------
+
     ax.text(23.5, 59.5, "Sender Node $N_i$", fontsize=11, fontweight="bold", ha="center", color=C_TXT)
 
     box(1.5, 48, 44, 8.5, C_A)
@@ -74,7 +67,7 @@ def figure1_architecture():
     arrow(23.5, 35.5, 23.5, 31.5)
     arrow(23.5, 23, 23.5, 20.5)
 
-    # ---------------- Receiver column (right) ----------------
+
     ax.text(78.5, 59.5, "Receiver Node $N_j$", fontsize=11, fontweight="bold", ha="center", color=C_TXT)
 
     box(56.5, 48, 42, 8.5, C_R1, edge=C_GREEN)
@@ -92,14 +85,14 @@ def figure1_architecture():
     arrow(78.5, 48, 78.5, 44.0, C_GREEN)
     arrow(78.5, 35.5, 78.5, 31.5, C_GREEN)
 
-    # ---------------- Channel band (bottom) ----------------
+
     box(14, 1.5, 72, 7.0, "#fff2cc", edge="#8a6d1a")
     label(50, 6.3, "DDIL Wireless Channel — Gilbert-Elliott Burst Loss (byte-scaled)", 9.5, "bold", "#5c4810")
     label(50, 3.3, "$P_{drop} = D_{env} \\cdot B_{payload}/B_{raw}$:   raw ~200 B faces full $D_{env}$;   ~104 B token faces $0.52\\,D_{env}$ (1.9x dilution)",
           8.0, color="#5c4810")
 
-    arrow(23.5, 12.5, 23.5, 8.5, "#8a6d1a", 2.0)          # sender -> channel
-    arrow(78.5, 8.5, 78.5, 23.0, C_GREEN, 2.0)             # channel -> receiver
+    arrow(23.5, 12.5, 23.5, 8.5, "#8a6d1a", 2.0)
+    arrow(78.5, 8.5, 78.5, 23.0, C_GREEN, 2.0)
 
     fig.tight_layout()
     path = f"{OUT}\\fig1_architecture.png"
