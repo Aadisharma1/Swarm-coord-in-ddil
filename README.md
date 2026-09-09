@@ -6,7 +6,6 @@
 
 ```bash
 # 1. Clone
-git clone https://github.com/Aadisharma1/Swarm-coord-in-ddil.git && cd Swarm-coord-in-ddil
 
 # 2. Install dependencies (vllm must already be installed on the GPU machine)
 pip install -r requirements.txt
